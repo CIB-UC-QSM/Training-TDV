@@ -1,0 +1,58 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Salidas de entrenamiento
+data/
+# Sin barra final a propósito: así cubre el directorio y también un symlink `runs -> <repo>/runs`,
+# que es como un worktree comparte las salidas de entrenamiento en vez de duplicarlas.
+runs
+*.pth
+*.pt
+*.mat
+*.nii
+*.nii.gz
+
+# Checkpoints: se versionan los oficiales (los tests de reproducción dependen de ellos) y los
+# entrenados elegidos (copias sin el estado del optimizador, 1.6 MB c/u). Las negaciones van
+# DESPUÉS de *.pth, porque en git gana la última regla que coincide.
+checkpoints/*
+!checkpoints/Oficiales/
+!checkpoints/Entrenados/
+!checkpoints/Oficiales/*.pth
+!checkpoints/Entrenados/*.pth
+
+# Datasets: las imágenes no se versionan; las listas de evaluación, los README y el script que arma
+# ldm100k sí. Para re-incluir algo hay que excluir el CONTENIDO (dir/*) y no el directorio, porque
+# git no entra en un directorio excluido.
+datasets/*
+!datasets/cache_ldm100k.py
+!datasets/bsds500/
+datasets/bsds500/*
+!datasets/bsds500/cbsd68.txt
+!datasets/bsds500/README.md
+!datasets/ldm100k/
+datasets/ldm100k/*
+!datasets/ldm100k/lista_eval.txt
+!datasets/ldm100k/README.md
+
+# Herramientas de la construcción del entrenador (mediciones, veredictos, hooks): quedan locales.
+scripts/
+
+# PDFs de papers: pesados (~67 MB). Se versionan solo las notas destiladas.
+docs/papers/*.pdf
+
+# Cachés
+.pytest_cache/
+*.egg-info/
+
+# Configuración local de agentes
+.claude/
+CLAUDE.md

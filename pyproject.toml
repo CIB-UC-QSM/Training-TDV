@@ -1,0 +1,26 @@
+[project]
+name = "training-tdv"
+version = "0.1.0"
+description = "Reentrenamiento de Total Deep Variation (Kobler et al., 2020) para su aplicación a QSM 3D"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "matplotlib>=3.11.1",
+    "nibabel>=5.4",    # NIfTI: sólo lo usa datasets/cache_ldm100k.py, no el entrenamiento
+    "numpy>=2.5.2",
+    "pillow>=11.0",
+    "scipy>=1.18.1",
+    "torch>=2.13.0",
+]
+
+# Layout plano: `ddr/` se importa desde la raíz, no hay paquete que instalar.
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]   # layout plano: ddr/ y train.py se importan desde la raíz
+addopts = "-q"
