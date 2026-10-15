@@ -107,6 +107,54 @@ def test_el_rebobinado_devuelve_pesos_y_momentos_exactos():
     assert escala == [10.0, 11.0, 12.0]
 
 
+def test_el_segundo_rebobinado_al_mismo_respaldo_tambien_devuelve_adam():
+    """El test de arriba rebobina una vez. El lazo de `t1-guard-2delta-5k` empezó en el SEGUNDO
+    rebobinado a la it 1 756: `opt.load_state_dict` adopta los tensores que recibe, y los pasos
+    dados entre uno y otro habían mutado el respaldo (`docs/mediciones/alias-respaldo-adam.txt`)."""
+    modelo = torch.nn.Linear(4, 2)
+    opt = torch.optim.Adam(modelo.parameters(), lr=1e-2, betas=train.BETAS)
+
+    def paso(valor):
+        opt.zero_grad()
+        for q in modelo.parameters():
+            q.grad = torch.full_like(q, valor)
+        opt.step()
+
+    for _ in range(3):
+        paso(0.5)
+    respaldo = train.respalda(modelo, opt, [10.0])
+    estado_bueno = copy.deepcopy(opt.state_dict())
+
+    for _ in range(2):
+        paso(1e6)
+        train.rebobina(modelo, opt, respaldo, [])
+    for i, q in enumerate(modelo.parameters()):
+        assert torch.equal(opt.state[q]["exp_avg"], estado_bueno["state"][i]["exp_avg"])
+        assert torch.equal(opt.state[q]["exp_avg_sq"], estado_bueno["state"][i]["exp_avg_sq"])
+        assert opt.state[q]["step"] == estado_bueno["state"][i]["step"]
+
+
+def test_un_rebobinado_que_cruza_un_hito_no_deshace_el_halving():
+    """El `state_dict` de Adam trae el lr del momento del respaldo. Restaurarlo tal cual dejaba el
+    lr al doble del calendario hasta el final de la corrida (6-13 % de riesgo en `t1-rapido-30k`,
+    `docs/mediciones/edad-del-respaldo.txt`)."""
+    modelo = torch.nn.Linear(4, 2)
+    opt = torch.optim.Adam(modelo.parameters(), lr=train.LR, betas=train.BETAS)
+    sched = torch.optim.lr_scheduler.MultiStepLR(opt, milestones=[3], gamma=0.5)
+    respaldo = None
+    for it in range(1, 6):
+        opt.zero_grad()
+        for q in modelo.parameters():
+            q.grad = torch.full_like(q, 0.5)
+        opt.step()
+        sched.step()
+        if it == 2:
+            respaldo = train.respalda(modelo, opt, [])
+    assert opt.param_groups[0]["lr"] == train.LR / 2
+    train.rebobina(modelo, opt, respaldo, [])
+    assert opt.param_groups[0]["lr"] == train.LR / 2
+
+
 def test_la_ventana_se_arma_antes_del_evento_mas_temprano():
     """El disyuntor queda armado en la it `ventana+1`, y el evento más temprano de las 81 corridas
     es el de `lambdainit/B-seed5`, en la 289."""

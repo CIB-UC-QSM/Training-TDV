@@ -56,6 +56,7 @@ se entrenó.
   - [Todas las banderas de train.py](#todas-las-banderas-de-trainpy)
   - [Qué deja una corrida, y cómo leer el log](#qué-deja-una-corrida-y-cómo-leer-el-log)
   - [Tests](#tests)
+  - [Entrenar en 3D](#entrenar-en-3d)
 - [Cómo funciona](#cómo-funciona)
   - El modelo: [el problema](#el-problema) · [una energía en vez de una predicción](#una-energía-en-vez-de-una-predicción) ·
     [la arquitectura](#la-arquitectura) · [la activación Student-t](#la-activación-student-t) ·
@@ -196,6 +197,34 @@ en float32, que es como se guarda `T`, son el mismo número.
 uv run python train.py --out runs/replica --iterations 100000 --t-init 0.1011928851 --seed 1
 ```
 
+#### Cuántas iteraciones hacen falta de verdad
+
+Las 100 000 son las del paper, pero **el 99 % del PSNR está mucho antes**, y está medido sobre las
+cuatro corridas de 10⁵ que tiene el repo. Primera iteración a partir de la cual el PSNR ya **no
+vuelve a bajar** del endpoint menos la tolerancia:
+
+| si tolerás perder… | cortá en | ahorro | `referencia` | `rapido` |
+|---|---|---|---|---|
+| **0.10 dB** | **it 22 000** | **78 %** | 8.3 h | **2.8 h** |
+| 0.05 dB | it 36 000–48 000 | 52–64 % | 13.6 h | 6.1 h |
+| 0.20 dB | it 12 000 | 88 % | 4.5 h | 1.5 h |
+
+El reparto por fase de lr explica por qué: la **primera** fase (it 1–25 000, lr 4e-4) gana
+**+11.283 dB** de los +11.377 totales, y las otras tres son el **76 % del costo** por **+0.094 dB**
+(`docs/mediciones/calendario-lr.txt`, figura en
+[`docs/presentacion/salida/img_evolucion_4corridas.png`](docs/presentacion/salida/img_evolucion_4corridas.png)).
+
+Dos avisos antes de recortar:
+
+- **Un corte deja el modelo sin templar.** Parar en la 22 000 lo deja con el lr todavía en 4e-4.
+  Para un número citado o para usarlo de prior en un lazo PnP, conviene que haya pasado al menos un
+  hito: el control truncado en la it 35 000 está a −0.050 dB y en la 40 000 a −0.042, ya con un
+  halving hecho.
+- **Comprimir el calendario no es gratis.** Medido en `runs/t1-rapido-30k`: el primer halving paga
+  como siempre, pero **el segundo encimado 5 000 iteraciones después no pagó nada** y la corrida se
+  congeló. El piso defendible para un tramo es **2 500** iteraciones, que son 2.5 memorias del
+  segundo momento de Adam (`1/(1−β₂) = 1 000`).
+
 Tarda ~38 h (la corrida original, 37.70 h) y usa ~10 GB de VRAM. En modo `referencia`, con la
 misma semilla, el mismo `T_init`, las mismas versiones de `uv.lock` y la misma GPU, debería
 terminar en el mismo 31.547. Es lo esperado, no lo medido para la corrida entera: lo medido es que
@@ -253,7 +282,7 @@ archivo explican de dónde sale cada valor.
 | `--out` | (obligatoria) | carpeta de salida; se crea si no existe |
 | `--mode` | `referencia` | `referencia` (fp32 IEEE, repite bit a bit), `intermedio` (TF32) o `rapido` (bf16). Ver [Los modos de ejecución](#los-modos-de-ejecución) |
 | `--iterations` | `10000` | iteraciones de entrenamiento, un lote cada una. La receta del paper son 100 000 |
-| `--t-init` | 8·δ_Adam = `0.10119…` | valor inicial de `T`; el default es el de la réplica. Tiene que quedar por encima de 2·δ_Adam = 0.0253 |
+| `--t-init` | 8·δ_Adam = `0.10119…` | valor inicial de `T`; el default es el de la réplica. No hay piso: bajarlo no mueve el PSNR y sube los rechazos (2·δ: 1.99×; 1.1·δ: 4.7×, a 10⁵), y nada verifica lo que se pase. La «regla 2-δ» se retiró el 2026-10-12 (ver [Por qué Adam lo empeora](#por-qué-adam-lo-empeora-y-por-qué-el-clip-no-sirve)) |
 | `--sigma` | `25.0` | nivel del ruido de entrenamiento, en la escala de 0 a 255. La evaluación usa el mismo |
 | `--seed` | `0` | fija los pesos iniciales, el sorteo de parches y el del ruido |
 | `--log-every` | `250` | cada cuántas iteraciones se imprime una línea de log |
@@ -366,9 +395,377 @@ Los tests son el contrato del port: si un cambio los rompe, el cambio está mal.
   parámetros y reproduzcan los cuatro PSNR publicados a 0.02 dB. Se salta si faltan los
   checkpoints o BSDS500, y usa la GPU si hay.
 - `test_recipe.py` — que las constantes de `train.py` sigan siendo las del paper, que el lr se
-  divida a la mitad, la regla 2-δ y que `T` y `λ` no estén atados.
+  divida a la mitad, que los init de `T` y `λ` no arranquen debajo de `δ_Adam` y que no estén
+  atados.
 - `test_disyuntor.py` — que el disyuntor rechace los picos sin tocar la corrida sana, que el
   rebobinado devuelva pesos y momentos exactos, y que el bucle no corte nunca.
+
+### Entrenar en 3D
+
+Viene de la rama `3D-Training`, integrada en `main` el 2026-10-15. `train3d.py` es `train.py`
+llevado a 3D: la receta (lr, betas, σ, S, TDV33, inits, disyuntor, modos) se importa de `train.py`,
+y lo que la tercera dimensión obliga a cambiar tiene su procedencia en el bloque final del archivo.
+El dataset es [`datasets/ldm100k3d`](datasets/ldm100k3d/README.md): T1 sintética **con cráneo**,
+no QSM.
+
+**Lote y memoria para la tarjeta de destino, una RTX PRO 6000 Blackwell Max-Q de 96 GB** (fijados
+el 2026-10-09 para 48 GB, llevados a 96 el 2026-10-15):
+
+| | valor | qué es |
+|---|---|---|
+| lote (`--lote`) | **32** parches de 48³ por paso de Adam | receta: igual en cualquier tarjeta |
+| micro-lote (`--micro-lote auto`) | **16** en 96 GiB → 2 acumulaciones por paso; 8 en 48 GiB; 2 en una 5070 Ti | hardware: el gradiente no cambia |
+| tope de VRAM (`--vram-gb`) | **96** (GiB, como los reporta torch; se recorta a la tarjeta) | PyTorch no pasa de ahí aunque la tarjeta tenga más |
+| pico predicho | **57.1 GiB** con 16; 28.8 con 8; 113.5 con 32, que no entra | extrapolado desde la 5070 Ti: lo mide `--sonda-vram` |
+| `--checkpointing` | no hace falta | baja la memoria ~5× por +22–27 % de tiempo |
+| antes de lanzar en la tarjeta nueva | `--sonda-vram`, y una corrida corta para medir s/it | el costo en esa tarjeta no está medido |
+
+Por qué 16 y no más: tiene que dividir a 32, y 32 no entra. **Si 16 es más rápido que 8 no está
+medido.** En la 5070 Ti, doblar el micro-lote bajaba el costo por parche sólo 2–6 %, porque lo que
+da velocidad es saturar el cómputo, no llenar la memoria. La Blackwell tiene más cómputo y puede
+saturar más tarde. La sonda lo dice en la tarjeta: si 16 no baja claramente los s por parche
+frente a 8, `--micro-lote 8` rinde igual con 28.8 GiB.
+
+```bash
+# el dataset, una vez: las listas están versionadas, así que basta con cachear (~20 GB, 1 min).
+# Escanear y volver a seleccionar está en datasets/ldm100k3d/README.md, y pisaría las listas.
+python datasets/cache_ldm100k3d.py cachea --lista lista_eval.txt --split val
+python datasets/cache_ldm100k3d.py cachea --lista lista_train_2000.txt --split train
+
+# una vez en cada tarjeta nueva: el pico medido de cada micro-lote contra el predicho, y los s
+# por parche; no entrena
+uv run train3d.py --out runs/sonda --sonda-vram
+
+# el tronco del piloto: lr constante, un estado completo cada 10 000
+uv run train3d.py --out runs/tronco3d --hitos --eval-every 1000
+
+# lo mismo en una tarjeta compartida de la que tocan 48 GB (decimales): 44.7 GiB
+uv run train3d.py --out runs/tronco3d --hitos --eval-every 1000 --vram-gb 44.7
+
+# una rama desde la 10 000 con lr/2 a partir de la 10 001
+uv run train3d.py --out runs/rama3d-10k --reanudar runs/tronco3d/estado-010000.pth \
+    --iterations 15000 --hitos 10000 --eval-every 1000
+
+# seguir después de un corte, en el mismo --out
+uv run train3d.py --out runs/tronco3d --reanudar runs/tronco3d/estado-020000.pth --hitos
+```
+
+Lo que cambia respecto de `train.py`, en una línea cada uno:
+
+- **Modo `rapido` por defecto.** En 3D `referencia` cuesta ~21× más
+  ([`docs/mediciones/costo-tdv3d.txt`](docs/mediciones/costo-tdv3d.txt)): queda para tests cortos,
+  y de una corrida en `rapido` se lee la tasa sobre semillas, nunca una corrida contra otra. La
+  excepción es una rama contra su tronco desde el mismo estado, que ven los mismos parches y el
+  mismo ruido: ese par sí se compara, y sólo por encima de la dispersión entre evaluaciones vecinas
+  del tronco.
+- **Parches de 48³ y lote 32** (`--patch`, `--lote`): el mismo número de parches por paso que el
+  paper en 2D («mini batch size of 32», sec. 5.1), no el mismo contenido: 32 × 48³ = 3.54 M
+  vóxeles, 4.3× los 830 k valores de BSDS color. El lote es receta y no depende de la tarjeta. En
+  una 5070 Ti el tronco de 40 000 iteraciones son 89 h con `--micro-lote 4` y 94 h con el 2 de
+  `auto` (derivado de 0.250 y 0.265 s por parche); en la tarjeta de destino no está medido.
+- **El micro-lote lo elige la memoria** (`--micro-lote auto`, el default): el mayor divisor del
+  lote cuyo pico predicho entra en `--vram-gb` con 10 % de margen. Con acumulación el gradiente es
+  el mismo para cualquier partición, porque ninguna capa acopla muestras, así que el micro-lote es
+  hardware: 16 en 96 GiB (57.1 GiB predichos), 8 en 48 (28.8), 2 en una 5070 Ti. `--vram-gb`
+  (default 96) va en
+  GiB, como los reporta torch, que da algo menos que la etiqueta: la 5070 Ti de «16 GB» reporta
+  15.45, y 44.7 vale sólo para una porción pactada en GB decimales. Se recorta a la memoria de la
+  tarjeta, y si queda por debajo PyTorch no pasa de ahí, para no pisar a otro en una tarjeta
+  compartida. El modelo de memoria se ajustó en la 5070 Ti y en otra tarjeta es una
+  extrapolación: **`--sonda-vram` mide el pico real** de cada micro-lote, lo deja en
+  `sonda-vram.json` y sale sin entrenar; si admite más que `auto`, se pasa `--micro-lote`
+  explícito. La columna `s/parche` es el tiempo por parche de tres iteraciones, tras una que
+  compila y no cuenta, y la sonda dice cuál micro-lote es el más rápido: si uno mayor no baja los
+  s por parche, usar más memoria no acelera (en la 5070 Ti, de 48³ × 2 a × 4 bajaba 6 %).
+  `--checkpointing` baja la memoria ~5× por +27 % de tiempo: el primer paso del esquema queda
+  sin checkpoint, porque la entrada no lleva gradiente; con `--guard-amp`, que se lo da, son ~9×.
+- **La RAM no depende de la VRAM**: la ocupa el dataset (`--train-list`; los 2 000 volúmenes son
+  ~19 GB). La corrida de humo usó 3.6 GB de VRAM y 26.8 GB de RAM, el pico del servicio según
+  systemd ([`docs/mediciones/humo-train3d.txt`](docs/mediciones/humo-train3d.txt)).
+- **El lr es una función de la iteración** (`--hitos`): sin la bandera, el calendario del paper;
+  sola, lr constante. Se fija en cada iteración, así que un rebobinado no lo toca.
+- **Reanudación exacta** (`--guardar-cada`, `--reanudar`): el estado completo viaja en
+  `estado-<it>.pth`. Seguir en el mismo `--out` no puede cambiar la receta; una rama (otro `--out`)
+  sólo puede cambiar además `--hitos`. Seguir en otra tarjeta con otro micro-lote está permitido y
+  avisa: el gradiente es el mismo salvo el orden de suma (con `--sigma-max` cambia además el ruido
+  de cada parche, y con `--guard-amp` la amplificación que mira), y desde ahí la corrida no es bit
+  a bit.
+- **La cota absoluta escala con el parche**: `GUARD_ABS · P³ / (93²·3)`, 4.26·10⁴ a 48³. El arranque
+  sano en 3D cruza 1e4 ([`docs/mediciones/arranque-g-3d.txt`](docs/mediciones/arranque-g-3d.txt)).
+- **Catorce columnas en la traza**: las diez de `train.py` y, al final, `‖g‖` del primer micro-lote
+  (con la 5 estima la escala de ruido del gradiente), el lr, la iteración efectiva y σ.
+- **Candidatas apagadas por defecto**: `--sigma-max` (ruido ciego), `--aug-signo`, `--aug-ganancia`
+  y `--mascara-cerebro` (abajo).
+- **La validación mide más, y se sigue en W&B**: NRMSE, PSNR en el cerebro, la reconstrucción
+  QSM de COSMOS con el modelo como denoiser y el número de estabilidad del esquema, con métricas
+  e imágenes en Weights & Biases (abajo, «Seguimiento y evaluación QSM»). No tocan la aritmética
+  del entrenamiento. El checkpoint para QSM es `best_qsm.pth`, el de menor NRMSE QSM entre los
+  estados estables, no el `best.pth` de mejor PSNR.
+
+El porqué de cada cosa, y qué cambia respecto del paper, está en la bitácora (entrada «Fase 2 en
+3D: qué cambia respecto del paper»).
+
+#### Cubos 100 % cerebro (`--mascara-cerebro`)
+
+Viene apagada; el autor la eligió para la corrida larga (2026-10-15). LDM_100k tiene cráneo: con el filtro de tejido,
+sólo el 4.0 % de los parches de 48³ cae entero en el cerebro, y el parche medio es 60 % cerebro.
+Con `--mascara-cerebro` cada parche es un cubo entero dentro del cerebro, a 1 vóxel o más de su
+borde, según una máscara por volumen: la intersección de deepbet 1.0.2 y HD-BET 2.0.1 sin TTA. El
+precio es la periferia: a 48³ los cubos cubren el 66 % del cerebro y el 18.5 % de la franja
+cortical (≤ 6 mm del borde); a 32³, el 80 % y el 38 % (bitácora, «Cubos 100 % cerebro»). La
+evaluación no cambia, así que una corrida con la bandera y otra sin ella se miden sobre los mismos
+recortes. Es receta: no se cambia al reanudar.
+
+Las máscaras se generan una vez por lista con
+[`datasets/mascaras_ldm100k3d.py`](datasets/mascaras_ldm100k3d.py), en tres pasos. Cada
+herramienta corre en su propio entorno de Python, no en el del proyecto: cómo armarlos con uv, con
+las versiones exactas, está en el docstring del script. `$H` es la carpeta de esos entornos.
+
+```bash
+# 1. deepbet: 0.16 s por cerebro en GPU (5070 Ti), 0.48 s en CPU
+CUDA_VISIBLE_DEVICES=0 $H/deepbet/bin/python -I datasets/mascaras_ldm100k3d.py deepbet \
+    --lista lista_train_2000.txt
+# 2. HD-BET sin TTA: 0.51 s por cerebro en GPU, 21.8 s en CPU
+CUDA_VISIBLE_DEVICES=0 $H/hdbet/bin/python -I datasets/mascaras_ldm100k3d.py hdbet \
+    --lista lista_train_2000.txt --herramientas $H
+# 3. en el .venv: intersección, recorte con la caja de la cache y verificación contra ella
+.venv/bin/python datasets/mascaras_ldm100k3d.py combina --lista lista_train_2000.txt --split train
+```
+
+- **Cuánto tarda:** con GPU, ~0.67 s por cerebro, ~22 min para los 2 000 y ~1.5 h para 8 000; en
+  CPU, ~12 h para los 2 000 (derivado de los tiempos medidos el 2026-10-09).
+- **Dónde correrlo:** donde haya una GPU libre, en esta máquina sin tanda en vuelo o en la tarjeta
+  de destino antes de entrenar. El paso 3 tiene que correr donde está la cache (`images/train`),
+  porque verifica cada máscara contra el volumen cacheado.
+- **Qué deja:** los pasos 1 y 2, las máscaras en el espacio del NIfTI, comprimidas (~55 KB), en
+  `datasets/ldm100k3d/mascaras-nifti/`; un sujeto ya hecho se saltea, así que cortar y relanzar
+  sigue donde quedó. El paso 3, `datasets/ldm100k3d/mascaras/train/<sujeto>.npy` (bool, 5.2 MB),
+  que es lo que lee `train3d.py`. Sin ellas, `--mascara-cerebro` se niega y da estos comandos.
+- **Al arrancar**, `train3d` lee las máscaras una por vez y se queda con las esquinas válidas
+  (~0.2 MB por volumen, 0.06 s cada uno), y el log dice cuántos volúmenes tienen cubos y la
+  mediana de esquinas: ~55 000 a 48³.
+
+#### Seguimiento y evaluación QSM
+
+`train3d` no tiene épocas: sortea parches. La «época» del seguimiento es la **validación**, cada
+`--eval-every` iteraciones (2 000 por defecto) y en la última. En cada una mide el denoising
+sobre los 12 recortes de evaluación y, si toca, evalúa el modelo **como denoiser dentro de la
+reconstrucción QSM**, que es su destino. Todo va al log, a `--out` y a
+[Weights & Biases](https://wandb.ai). W&B es una vista: lo que registra está también en
+`traza.npy`, `history.json`, `qsm.jsonl` y `estado.json`.
+
+**Qué se registra en W&B** (el paso es la iteración):
+
+| cuándo | métricas | imagen |
+|---|---|---|
+| cada `--log-every` | `train/loss`, `train/T`, `train/lambda`, sus derivadas, `train/grad_norm` y `train/grad_norm_max` (el `max\|g\|` del log), la mediana del disyuntor y `train/grad_razon`, `train/lr`, la iteración efectiva, `train/rechazos`, `train/rebobinados`, `train/s_por_it` y, con GPU, `train/vram_pico_gib` | — |
+| cada validación | `val/psnr`, `val/psnr_tejido`, `val/psnr_cerebro`, `val/nrmse_pct`, `val/nrmse_pct_tejido` | `val/denoising`: limpia, ruidosa, salida y 5·\|error\| del primer volumen |
+| cada evaluación QSM | `qsm/nrmse_final_pct`, `qsm/nrmse_min_pct`, `qsm/iter_min`, `qsm/iteraciones`, `qsm/alpha`, `qsm/segundos`, `qsm/fallo` | `qsm/reconstruccion`: GT, reconstrucción y error en ±0.1 ppm |
+| con la cadencia de QSM, haya COSMOS o no | `val/estabilidad` y `val/lambda_max`; con COSMOS, también `qsm/estabilidad` y `qsm/lambda_max` | — |
+| al final | el resumen: lo de `estado.json`, con el mejor PSNR y el último y el menor NRMSE QSM con su iteración | — |
+
+- **NRMSE** = 100·‖x̂ − x‖/‖x‖, en %. En denoising, por volumen y promediado como el PSNR. En QSM es
+  la métrica del autor, contra `chi_cosmos` dentro de su máscara.
+- **`val/psnr_cerebro`** se mide sólo si están las máscaras de los 12 de evaluación en
+  `datasets/ldm100k3d/mascaras/val/`. Se generan como las de entrenamiento, con
+  `--lista lista_eval.txt --split val`. Mide la región que ve el entrenamiento con
+  `--mascara-cerebro`; el recorte entero tiene cráneo y aire. Agregarla no cambia los PSNR de
+  antes.
+
+**W&B**, con `--seguimiento` (default `auto`) y `--wandb-proyecto` (default `training-tdv3d`):
+
+- `auto`: sube en vivo si hay credencial y, si no, guarda offline. Para tener credencial, una vez
+  por máquina: `wandb login`, o `WANDB_API_KEY` en el entorno.
+- `offline`: guarda en `<out>/wandb/` sin red. Se sube después con
+  `wandb sync <out>/wandb/offline-run-*`; el log de arranque da el comando exacto.
+- `no`: sin W&B. Ni siquiera importa wandb.
+
+El seguimiento nunca corta el entrenamiento. Si wandb falla, imprime el error una vez y la
+corrida sigue sin él. Reanudar en el mismo `--out` sigue la misma corrida de W&B sólo si no se
+registró nada después del estado: al extender una terminada, o si el corte cayó justo en un
+estado. Tras un corte común, W&B ya tiene pasos posteriores al último estado, así que se abre
+otra corrida con el mismo nombre, y el id de la vieja queda en `descartadas` de
+`<out>/seguimiento.json`. Una rama es otra corrida, en el grupo del tronco.
+
+**La evaluación QSM** es el protocolo de `../tdv/wTDV_QSM_torch_3d.py` en
+[`ddr/qsm3d.py`](ddr/qsm3d.py): ADMM plug-and-play con la red 3D sobre los 160³ de COSMOS, con
+μ = 0.008, μ₂ = 1.0, target_std = 0.06 y hasta 100 iteraciones con su criterio de parada.
+Reproduce el 26.89 % de NRMSE del autor con su red 2D.
+
+- **Los datos** van en `datasets/qsm_cosmos/`: `params.mat` y `chi_cosmos.mat` de
+  `../tdv/data_mat` (40 y 7.7 MB). En esta máquina son enlaces simbólicos, que no viajan. **En
+  otra máquina hay que copiar los dos archivos**:
+
+  ```bash
+  mkdir -p datasets/qsm_cosmos
+  cp <tdv>/data_mat/params.mat <tdv>/data_mat/chi_cosmos.mat datasets/qsm_cosmos/
+  ```
+
+  Si falta alguno, el log de arranque avisa cuál y de dónde copiarlo, la evaluación QSM queda
+  apagada y el entrenamiento sigue. `--qsm-datos <carpeta>` usa otra carpeta, y
+  `--qsm-datos ''` la apaga sin aviso.
+- **Cuándo:** `--eval-qsm-cada 0` (default) la corre en cada validación. Con `N > 0`, sólo en
+  las validaciones de iteración múltiplo de N y en la última. `--qsm-max-iter` cambia el tope de
+  iteraciones del ADMM.
+- **Cuánto cuesta**, medido en la 5070 Ti
+  ([`docs/mediciones/qsm-eval-gpu.txt`](docs/mediciones/qsm-eval-gpu.txt)):
+
+  | modo | s por iteración de ADMM | pico de VRAM |
+  |---|---|---|
+  | `rapido` | 3.40 (44 la primera, que compila) | 5.19 GiB |
+  | fp32 sin compilar | 25.95 | 6.92 GiB |
+
+  Una evaluación típica tiene ~27 iteraciones: ~1.5 min en `rapido`. Eso es el 0.6–2 % de un
+  intervalo de 2 000 iteraciones (derivado). Una red que no converge corre las 100 iteraciones,
+  ~5.7 min. En la tarjeta de destino no está medido.
+- **No puede matar el entrenamiento.** Un error, también un OOM, se imprime, queda como
+  `qsm/fallo` = 1 y en `qsm.jsonl`, y la corrida sigue.
+- **No toca el entrenamiento:** no usa el generador del ruido ni el de los parches. Con y sin
+  ella, la traza sale bit a bit igual (test en `referencia` y CPU).
+
+`estado.json` suma el resumen QSM (`qsm_nrmse_ultimo_pct`, `qsm_nrmse_mejor_pct` y su
+iteración, `qsm_fallos`). `qsm_nrmse_mejor_pct` es el menor de todas las evaluaciones, estables o
+no; el del checkpoint para QSM está en `best_qsm` (abajo).
+
+**El número de estabilidad**, `(T/S)·λ_max(∇²R)`, dice si el esquema desenrollado amplifica en un
+punto. Cada paso es descenso de gradiente explícito sobre `T·R`, y un paso explícito es estable
+mientras `(T/S)·λ_max < 2`, con `λ_max` el autovalor mayor de la Hessiana del regularizador en ese
+punto. Por encima de 2 el paso amplifica, y los S = 10 pasos componen la amplificación. Como en
+`main`, `λ_max` se mide como `‖Hv‖` de la iteración de potencia: el módulo del autovalor dominante,
+que nunca es menor que el mayor positivo. Si el número pasa de 2, el paso amplifica cualquiera sea
+el signo del dominante: con uno negativo, `|1 − (T/S)·μ| ≥ 3`.
+
+- **Por qué importa:** el PSNR de la validación no lo ve. En `main`, el 2026-10-12, los
+  checkpoints 2D propios rendían peor que el oficial como prior del ADMM de QSM y no convergían.
+  A σ = 25, donde entrenan, los cuatro daban 1.38–2.01 y sus PSNR coincidían en 0.027 dB. A la
+  amplitud de uso de QSM, el oficial daba 0.99 y los propios 2.8–23.2, en el mismo orden en que se
+  degradaban (bitácora de `main`, «POR QUÉ los checkpoints propios rinden peor como prior PnP de
+  QSM»).
+- **Dónde se mide:** en dos puntos, en un cubo de `--estabilidad-lado`³ (96³ por defecto). `val`
+  es el centro del primer recorte de evaluación, con el ruido de la validación: es el punto de
+  entrenamiento. `qsm`, sólo con COSMOS, es la entrada del primer denoiser del ADMM, la
+  estimación inicial llevada a std 0.06: es el punto de uso. El número depende del lado, así que
+  se compara al mismo lado.
+- **Cuándo y dónde queda:** con la cadencia de la evaluación QSM (`--eval-qsm-cada`), haya COSMOS
+  o no. Va al log, a `history.json` (`val`) y a `qsm.jsonl` (`qsm`), con las claves
+  `estabilidad`, `lambda_max` y `estabilidad_cambio`, y a W&B. Un `*INESTABLE*` en el log marca un
+  número de 2 o más.
+- **Cómo leerlo:** `estabilidad_cambio` es el cambio relativo de `λ_max` en la última de las 40
+  iteraciones de la potencia. Si es grande, las iteraciones no alcanzaron, y el número queda por
+  debajo del verdadero; uno chico no lo garantiza. En una red de juguete, el error fue de 1.7 a
+  5.3 veces el cambio, y 41 veces con los dos mayores módulos a 0.98 uno del otro (0.9 % contra
+  2.2e-4: [`docs/mediciones/convergencia-estabilidad.txt`](docs/mediciones/convergencia-estabilidad.txt)).
+  El log da al lado el cociente de Rayleigh `vᵀHv`, que da el signo: ≈ `+λ_max` si el dominante
+  es positivo y ≈ `−λ_max` si es negativo. No es el número porque, con dos dominantes de signo
+  opuesto y módulo parecido, no converge a ninguno de los dos.
+- **Cuánto cuesta:** en GPU a 96³, 19–36 s por punto y 39–73 s por validación, derivado de lo
+  medido en CPU ([`docs/mediciones/costo-estabilidad.txt`](docs/mediciones/costo-estabilidad.txt)).
+  Pide ~9 GB de memoria en float32, también derivado. Si no entra, el OOM queda como
+  `estabilidad_fallo` y el entrenamiento sigue; `--estabilidad-lado 64` la baja ~3.4×.
+  `--estabilidad-lado 0` apaga la medición. Con ella y sin ella, la traza sale bit a bit igual
+  (test en `referencia` y CPU).
+
+**`best_qsm.pth` es el checkpoint que se pasa a QSM**, no `best.pth`. En `main`, el 2026-10-12, el
+PSNR de denoising no servía para elegir un prior del ADMM: el criterio es el NRMSE QSM entre los
+estados estables. `train3d` lo escribe tras una validación en la que la evaluación QSM terminó sin
+fallo y la estabilidad en COSMOS se midió sin fallo y dio menos de 2, si su NRMSE final es el menor
+hasta ahora. El log lo dice con una línea `best_qsm.pth: NRMSE QSM …`.
+
+- **Qué lleva:** lo de `best.pth` salvo el estado de Adam (`config`, `model`, `iteration`, `psnr`),
+  más `nrmse_final_pct`, `nrmse_min_pct`, `iteraciones`, `motivo` y `estabilidad` de esa
+  validación. Se carga como `best.pth`. Para seguir entrenando desde ahí está el `estado-<it>.pth`.
+- **Cuándo no hay:** sin COSMOS o con `--estabilidad-lado 0` no se busca, y el log de arranque lo
+  dice. Tampoco hay si ningún estado estable tuvo evaluación QSM. `estado.json` lo resume en
+  `best_qsm` (`iteration`, `nrmse_final_pct` y `estabilidad`), o `null`.
+- **Al reanudar** viaja en el estado y se trata como `best.pth`: uno de otro linaje se aparta como
+  `best_qsm-descartada-<it>.pth` y se repone el del estado. Una rama hereda el del tronco.
+- **Estable no es usable: mirá su `nrmse_final_pct` antes de pasarlo a QSM.** La estabilidad se
+  mide en un solo punto, la entrada del primer denoiser del ADMM. En `v12-control` dio 1.54 en la
+  iteración 200 y el ADMM igual divergió, a 144 %; ese estado quedó como `best_qsm.pth` porque era
+  el único estable (bitácora, RESULTADO de `ventana-3d-12h`). Qué condición agregar está abierto.
+- **Se compara a criterio fijo:** el NRMSE y el número de estabilidad dependen de COSMOS,
+  `--qsm-max-iter` y `--estabilidad-lado`. Son libres al reanudar, pero cambiarlos a mitad de
+  corrida mezcla criterios en la misma elección, y nada lo verifica.
+
+El porqué de cada decisión está en el bloque final de `train3d.py`, entradas SEGUIMIENTO,
+EVALUACIÓN QSM y ESTABILIDAD, y el método, en el de `ddr/qsm3d.py`.
+
+#### Llevar el entrenamiento 3D a otra máquina
+
+Nada de esto está probado en la tarjeta de destino: los costos son de la RTX 5070 Ti (16 GB),
+medidos el 2026-10-13 (bitácora, `ventana-3d-12h`).
+
+**1. Qué copiar.** El repositorio en `main` (o en la rama `3D-Training`, que se integró en `main` el
+2026-10-15), y aparte los datos, que no se versionan. Copiá archivos, no enlaces: un enlace a otra
+carpeta de esta máquina no viaja.
+
+| carpeta | qué | tamaño |
+|---|---|---|
+| `datasets/ldm100k3d/images/train/` | los 2 000 volúmenes cacheados de `lista_train_2000.txt` (float16) | 20 GB |
+| `datasets/ldm100k3d/images/val/` | los 12 de evaluación | 119 MB |
+| `datasets/ldm100k3d/mascaras/val/` | máscaras de cerebro de los 12: dan `val/psnr_cerebro` | 60 MB |
+| `datasets/ldm100k3d/mascaras/train/` | las de los 2 000 (`.npy` bool), sólo para `--mascara-cerebro` | 9.8 GB |
+| `datasets/qsm_cosmos/` | `params.mat` y `chi_cosmos.mat` de `../tdv/data_mat`: la evaluación QSM | 48 MB |
+
+Las listas (`datasets/ldm100k3d/lista_*.txt`) están versionadas. Con los volúmenes cacheados no
+hacen falta ni el LDM_100k crudo ni las herramientas de máscara. Las máscaras de train se
+generaron el 2026-10-13 (deepbet ∩ HD-BET sin TTA, 2 000 de 2 000 verificadas contra su volumen;
+mediana 1 387 ml de cerebro, 27 % del recorte).
+
+**2. Entorno.** `uv sync` (torch 2.13 con CUDA 13, según `uv.lock`; si el driver pide otra CUDA,
+el índice de torch que le corresponda) y `uv run python -c "import torch;
+print(torch.cuda.get_device_name())"`. Para W&B en línea, `uv run wandb login` o `WANDB_API_KEY`:
+sin credencial, `--seguimiento auto` queda offline en `<out>/wandb/` y se sube después con
+`wandb sync`. La RAM la ocupa el dataset: ~27 GB con los 2 000.
+
+**3. Antes de lanzar, en orden:**
+
+1. `uv run pytest -k "not published_psnr"`: todo verde.
+2. `uv run train3d.py --out runs/sonda --sonda-vram`: el micro-lote que entra y los s por parche.
+   En 96 GB, `auto` elige 16 (~57 GiB). Si su s/parche no baja claramente frente al 8, sumá
+   `--micro-lote 8` al lanzar (~29 GiB).
+3. `uv run train3d.py --out runs/prueba --iterations 40 --eval-every 20`: de punta a punta, con dos
+   validaciones completas. En la 5070 Ti tardó 21 min (2026-10-13, `runs/v12-humo`).
+
+**4. Cuánto cuesta.** En la 5070 Ti, con lote 32 de 48³ y micro-lote 2: 0.280–0.291 s por parche,
+9.0–9.3 s/it, según la sonda. Cada validación suma tres cosas:
+- el PSNR de los 12, en segundos;
+- la estabilidad a 96³, ~31–40 s por punto, dos puntos;
+- el ADMM de COSMOS, 3.4–3.8 s por iteración. Corta en ~27 iteraciones si la red es buena (~1.5 min) y
+  llega a 100 si no (~6 min, como en las primeras validaciones).
+
+Las iteraciones para un presupuesto de horas son N ≈ horas · 3 600 / (s/it), menos el costo de
+las validaciones. N y el calendario (`--hitos`) los decide el autor con el s/it de la tarjeta
+nueva.
+
+**5. Lanzar** en segundo plano, con una unidad o `tmux`, nunca encadenado:
+
+```bash
+systemd-run --user --unit tdv-3d-largo -p WorkingDirectory=$PWD bash -c \
+    'uv run train3d.py --out runs/3d-largo --iterations N --hitos <hitos> --mascara-cerebro \
+     --eval-every 2000 --guardar-cada 5000 > runs/3d-largo.log 2>&1'
+```
+
+Lo que queda fijo para la corrida larga (bitácora, 2026-10-15):
+- **`T_init = 8·δ_Adam`**: es el default, no se pasa.
+- **Los 2 000 cerebros de `lista_train_2000.txt`**: el default de `--train-list`.
+- **`--mascara-cerebro`**: no cuesta tiempo por iteración, y al arrancar suma ~2 min de leer
+  máscaras. Su precio es la periferia: los cubos cubren el 66 % del cerebro y el 18.5 % de la
+  franja cortical.
+- **`--aug-ganancia` apagada** (el default).
+
+Si se corta, `--reanudar runs/3d-largo/estado-<it>.pth --out runs/3d-largo` sigue exacto.
+
+**6. Qué se pasa a QSM-TDV: `best_qsm.pth`**, no `best.pth`: el estado de menor NRMSE QSM entre los
+que tienen estabilidad < 2 (arriba). Si `estado.json` dice `"best_qsm": null`, ningún estado fue
+estable y no hay checkpoint para QSM. Antes de usarlo, mirá su `nrmse_final_pct`: estable no
+garantiza que el ADMM converja. Durante la corrida conviene mirar:
+- `train/rechazos` y `train/rebobinados`: el disyuntor. En el humo y en `v12-control` hubo eventos en las
+  primeras 50 iteraciones, contenidos con rebobinados.
+- `train/T` lejos de 0.
+- `val/psnr` y `qsm/nrmse_final_pct`.
+- `qsm/iteraciones` < 100: el ADMM corta.
+- `qsm/estabilidad` < 2.
 
 ---
 
@@ -484,6 +881,44 @@ datos entero cuesta apenas 0.033 dB.
 `T` está acoplada a `S`: cambiar el número de pasos en inferencia sin reajustar `T` degrada el
 resultado.
 
+#### El paso es explícito, y eso le pone una condición de estabilidad
+
+El primer renglón es descenso de gradiente **explícito**, y un paso explícito sólo baja mientras
+
+```text
+(T/S) · λ_max(∇²R) < 2
+```
+
+Por encima de ese umbral el paso amplifica en vez de bajar, y con `S = 10` pasos encadenados la
+amplificación se compone diez veces.
+
+El entrenamiento lo mantiene bajo control **a la amplitud a la que entrena**, porque si lo cruzara
+entrenaría mal: los cuatro checkpoints de 10⁵ iteraciones caen en **1.38–2.01** a σ = 25, pegados
+al umbral y por debajo. Lo que pasa a **otra** amplitud no lo controla nada. Medido a `std = 0.06`,
+que es donde corre la red el solver de QSM (`../tdv/wTDV_QSM_torch.py`), el checkpoint oficial
+**baja** a 0.99 y los tres nuestros **suben** a 2.79, 5.76 y 23.2 — con los cuatro coincidiendo en
+**0.027 dB** de PSNR a σ = 25.
+
+Dentro del ADMM eso se ve entero **en el punto de operación**: con `target_std = 0.06` el oficial
+—el único estable ahí— converge en **33** iteraciones con 27.34 % de RMSE, y ninguno de los tres
+nuestros converge en 100 (28.36–28.50 %). Cuatro de cuatro.
+
+Fuera de ese punto la correspondencia **no** se sostiene, y conviene decirlo: el oficial a
+`target_std = 0.12` es estable (0.95) y aun así no converge en 100, y el de 1.1·δ a 0.12 es
+inestable y converge en 30. Mover `target_std` cambia a la vez la estabilidad **y** la fuerza del
+prior, y la convergencia del ADMM depende además de su propio acoplamiento (`μ`). O sea: el número
+explica el comportamiento **donde se lo usa**, no es una teoría completa del ADMM.
+
+La salida no está en el solver sino en el entrenamiento, y hay una demostración a mano:
+`../tdv/checkpoints/checkpoint_qsm_rapido.pth`, reentrenado 30 000 iteraciones sobre QSM, da
+**1.14** en ese mismo punto — estable. Y no por tener la `T` más chica: la suya es 0.0956, casi la
+del de 8·δ (0.0826). Lo que baja es `λ_max(∇²R)`, 119 contra 2 809. Reentrenar en el dominio y a la
+amplitud de uso cambia el regularizador, no la coordenada.
+
+**Si el checkpoint va a usarse como prior Plug-and-Play, la PSNR de denoising no alcanza para
+elegirlo.** El número de arriba es barato, sólo necesita el checkpoint, y se mide con
+`scripts/diag_qsm_estabilidad.py`. Bitácora del 2026-10-12.
+
 ### Los dos escalares aprendidos: T y λ
 
 Además de los pesos de la red, el entrenamiento aprende dos números:
@@ -573,13 +1008,37 @@ límite de régimen estacionario (vale para iteraciones `t ≫ 1/(1−β₂) = 1
 mitad con cada halving del lr.
 
 Para los 388 mil pesos, 0.0127 es poco. Para `T` es mucho si `T` vale del orden de δ_Adam: un solo
-pico con el signo equivocado la manda a la pared en cero, donde la red deja de aprender. De ahí la
-**regla 2-δ**: `T` tiene que arrancar por lo menos en `2·δ_Adam = 0.0253`. Es un piso, no un valor
-recomendado: arrancar ahí es un régimen crónicamente inestable que pide 12–72 veces más
-intervención del disyuntor. El default, `8·δ`, es el arranque de la réplica y deja margen de sobra:
-en las dos corridas finales `T` nunca bajó de 6·δ. Por encima del piso, `T_init` no mueve el PSNR
-—a iteración pareada, llevarlo de 2·δ a 10·δ cambió 0.026 dB a las 2 000 iteraciones y 0.015 dB a
-las 10 000, debajo de lo detectable—; lo que cambia es cuánto tiene que intervenir el disyuntor.
+pico con el signo equivocado la manda a la pared en cero, donde la red deja de aprender. `T_INIT =
+0.001` mató tres corridas por esa vía.
+
+> **Acá hubo una «regla 2-δ» y se retiró el 2026-10-12.** Decía que `T` tenía que arrancar por lo
+> menos en `2·δ_Adam = 0.0253`. `δ_Adam` es real y está derivado y medido; **el factor 2 era una
+> elección**, y nunca predijo nada: `tinit/B-larga` arrancó **en** 2·δ y murió con `T = 0`,
+> `t1p1delta-rapido-100k` arrancó en **1.1·δ** y terminó las 100 000, y el mismo razonamiento ya
+> estaba refutado para `λ` (hacía falta 2.2·δ y 10 de 12 seguían tocando el clamp). Lo que queda es
+> un **costo continuo**, medido, y el default de 8·δ, que es el de la réplica.
+
+Lo que sí está medido, a 10⁵ iteraciones y misma semilla
+([`docs/mediciones/modo-y-tinit-100k-s1.txt`](docs/mediciones/modo-y-tinit-100k-s1.txt),
+[`t1p1delta-100k.txt`](docs/mediciones/t1p1delta-100k.txt)):
+
+| `T_init` | PSNR @100 000 | contra el control | rechazos | rebobinados | % del costo en la 1ª fase de lr |
+|---|---|---|---|---|---|
+| `8·δ` (default, el de la réplica) | 31.547 | — | 163 | 4 | 2 % |
+| `2·δ` | 31.536 | **−0.011 dB** | 325 (**1.99×**) | 5 | 96 % |
+| `1.1·δ` | 31.525 | **−0.022 dB** | 378 (**4.7×** en `rapido`) | 8 | 91 % |
+
+O sea: **`T_init` no mueve el endpoint y sí mueve la exposición**, de forma continua y sin umbral a
+la vista. Y el riesgo tiene fecha de vencimiento, porque **`δ_Adam` no es constante: se parte a la
+mitad en cada hito del lr**. `train.py` lo calcula una vez desde el `LR` inicial, pero el
+desplazamiento real va con el lr vivo, así que la reserva `T/δ_vivo` se duplica sola en cada hito
+—la corrida de 1.1·δ fue 1.65 → 3.84 → 8.46 → 17.80 → 35.66— y por eso >90 % del costo de las dos
+corridas de `T_init` bajo cae antes del primer hito.
+
+`T` tampoco tiene destino: las cuatro corridas terminan ordenadas por su `T_init` (1.1 → 2.23·δ,
+2 → 2.76·δ, 8 → 6.53·δ), o sea que `T*` **no** es un atractor. Es lo que pide el gauge
+`(T, K_N) → (cT, K_N/c)`, que deja el modelo idéntico: **`T` sola no es observable**, sólo el
+producto `T·∇R`.
 
 El **clip** de norma global no sirve contra esto, y está probado dos veces. Recortar multiplica
 todos los gradientes de ese paso por un mismo escalar, y el cociente `m̂/√v̂` de Adam cancela ese
@@ -638,9 +1097,13 @@ umbral de 25 queda por encima de los 18 rechazos seguidos que alcanza como máxi
 corpus, así que una corrida sana no debería rebobinar. Rebobinar no corta el bucle: la traza sigue
 teniendo una fila por iteración.
 
-Un detalle del código, comprobado con un optimizador de juguete y no en una corrida: el lr viaja
-dentro del estado de Adam, así que rebobinar a un respaldo tomado antes de un halving deshace ese
-halving, y el lr queda al doble del calendario hasta el final.
+Dos detalles del código, corregidos el 2026-10-08 en la rama `3D-Training` y el 10-09 en `main`, con
+el mismo código. `opt.load_state_dict` no copia los tensores que recibe, los adopta: sin una copia,
+los pasos siguientes mutaban el respaldo y el segundo rebobinado al mismo respaldo devolvía los
+pesos pero no Adam, que es lo que trabó `t1-guard-2delta-5k`
+(`docs/mediciones/alias-respaldo-adam.txt`). Y el lr viaja dentro del estado de Adam, así que
+rebobinar a un respaldo tomado antes de un halving lo deshacía. Ahora `rebobina()` restaura una
+copia y conserva el lr vigente.
 
 Es la pieza que recupera la corrida. En `t8delta-100k-s1` el disyuntor rechazó 163 lotes de
 100 000 y rebobinó 4 veces (iteraciones 24 796, 27 123, 29 419 y 99 365), con una `‖g‖` máxima de
@@ -670,7 +1133,15 @@ iteraciones ya son otras corridas. Además cuDNN trae TF32 encendido de fábrica
 `referencia` lo apaga a mano: si no, una corrida «fp32» no sería IEEE.
 
 Cuándo usar cada uno: `referencia` para todo número que se vaya a citar y para cualquier
-comparación entre dos corridas; `rapido` para explorar, sabiendo que no repite. bf16 no es más
+comparación entre dos corridas; `rapido` para explorar, sabiendo que no repite. Para **entrenar**
+sirve igual, y está medido a iteración pareada: a 10⁵ iteraciones con la misma semilla `rapido` da
+**31.546 dB** contra **31.547** de `referencia`, con 49 de 50 puntos pareados dentro de 0.05 dB y
+**2.98×** de velocidad ([`docs/mediciones/rapido-vs-referencia-100k.txt`](docs/mediciones/rapido-vs-referencia-100k.txt)).
+Lo que no da es repetibilidad bit a bit, ni el mismo `λ`: queda **4.7× más baja**. Medido de forma
+invariante de gauge, eso es un término de dato **4.8× más débil** (`ρ = λ‖x−z‖ / T‖∇R‖` da
+0.031–0.039 en `rapido` contra 0.15–0.18 en `referencia`), con el mismo regularizador en los dos
+(coseno 0.98) y los denoisers coincidiendo a 43–46 dB
+([`docs/mediciones/gauge-4-corridas.txt`](docs/mediciones/gauge-4-corridas.txt)). bf16 no es más
 estable que TF32: sobre 12 semillas por modo, sin disyuntor, murieron 5 en bf16 y 6 en TF32 antes
 de las 4 000 iteraciones, y la diferencia en la tasa de muertes (1.31×, p = 0.61) no es
 significativa ([`docs/mediciones/precision.txt`](docs/mediciones/precision.txt)). Se elige por
@@ -683,7 +1154,8 @@ cambian la receta; a lo sumo cambian la velocidad o la reproducibilidad.
 
 **Cambia el experimento.** `--iterations` distinto de 100 000, `--t-init`, `--sigma`, el dataset,
 el calendario del lr y los parámetros del disyuntor son legítimos para experimentar, pero el número
-que salga ya no es comparable con el 31.53. `--t-init` tiene además un piso duro, `2·δ_Adam`.
+que salga ya no es comparable con el 31.53. `--t-init` no tiene piso —la «regla 2-δ» se retiró el
+2026-10-12—: bajarlo cuesta exposición al estallido, no PSNR.
 
 **La receta del paper** son constantes al principio de `train.py`, a propósito sin bandera: parche
 93, lote 32, lr inicial 4·10⁻⁴, β = (0.9, 0.999), S = 10 y TDV33 (32 features, 3 escalas, 3
@@ -804,10 +1276,15 @@ Cada 2 000 iteraciones evalúa en CBSD68 y guarda `last.pth` y, si mejoró, `bes
 ├── ddr/                        el modelo: port de VLOGroup/tdv
 │   ├── conv.py                   operadores lineales con su adjunta exacta
 │   ├── tdv.py                    TotalDeepVariation2D: la energía R y su gradiente
-│   ├── model.py                  VNet2D: el esquema desenrollado, T y λ
-│   └── data.py                   cargadores, parches, augmentación, ruido y PSNR
+│   ├── model.py                  VNet2D y VNet3D: el esquema desenrollado, T y λ
+│   ├── data.py                   cargadores, parches, augmentación, ruido y PSNR
+│   ├── conv3d.py, tdv3d.py       los mismos operadores y la misma energía, en 3D
+│   ├── data3d.py                 parches 3D con las 48 simetrías del cubo, recortes de evaluación
+│   ├── qsm3d.py                  la evaluación QSM: el ADMM del autor con el denoiser, sobre COSMOS
+│   └── seguimiento.py            W&B para train3d.py, que nunca corta el entrenamiento
 ├── train.py                    el entrenador; las notas al final explican el código
-├── evaluate.py                 PSNR de un checkpoint sobre imágenes completas
+├── train3d.py                  el entrenador 3D: la receta de train.py, con reanudación y ramas
+├── evaluate.py                 PSNR de un checkpoint sobre imágenes completas (y recortes 3D)
 ├── tests/                      el contrato del port y de la receta
 ├── checkpoints/
 │   ├── Oficiales/                los dos .pth de los autores (color y gris) y su README
@@ -815,7 +1292,11 @@ Cada 2 000 iteraciones evalúa en CBSD68 y guarda `last.pth` y, si mejoró, `bes
 ├── datasets/
 │   ├── bsds500/                  imágenes locales; versionados cbsd68.txt y el README
 │   ├── ldm100k/                  cortes de T1 locales; versionados lista_eval.txt y el README
-│   └── cache_ldm100k.py          arma ldm100k desde los NIfTI de LDM_100k
+│   ├── ldm100k3d/                volúmenes de T1 locales; versionadas las listas y el README
+│   ├── qsm_cosmos/               local: params.mat y chi_cosmos.mat de ../tdv/data_mat
+│   ├── cache_ldm100k.py          arma ldm100k desde los NIfTI de LDM_100k
+│   ├── cache_ldm100k3d.py        arma ldm100k3d: escaneo, selección de máxima variedad y cache
+│   └── mascaras_ldm100k3d.py     máscaras de cerebro de ldm100k3d, para --mascara-cerebro
 ├── docs/                       bitácora, métricas, mediciones, papers y la presentación
 ├── AGENTS.md                   contexto y reglas de trabajo del repositorio
 ├── pyproject.toml, uv.lock, .python-version
@@ -864,15 +1345,16 @@ Lo siguiente es la tanda **`t1-ldm100k`**, pre-registrada en la bitácora y sin 
 corridas de 50 000 iteraciones sobre cortes de T1, con `T_init` en 8·δ y en 2·δ y el calendario
 del lr comprimido. Es el primer cambio de dominio.
 
-Después viene la **fase 2**: llevar el prior a QSM 3D, en el repositorio hermano `QSM-TDV`,
-entrenando desde cero con datos QSM. Lo que cambia, más allá de la dimensión: el término de datos
-deja de ser la identidad y pasa a ser la convolución con el kernel del dipolo, que se anula en un
-cono a 54.7° del campo principal, así que el prior tiene que rellenar un nulo del operador y no
-sólo quitar ruido. `T` y `λ` se reaprenden porque dependen del término de datos; las unidades son
-ppm y no [0, 1]; la augmentación deja de ser libre, porque el eje del campo no es intercambiable con
-los otros dos; y las métricas pasan a ser RMSE, HFEN y SSIM contra COSMOS. La mejora candidata de
-más valor para QSM es entrenar a ciegas del nivel de ruido, con σ sorteado en cada lote, que
-eliminaría el reescalado entre σ ([`AGENTS.md`](AGENTS.md), «Mejoras candidatas»).
+Después viene la **fase 2**: llevar el prior a QSM 3D. El primer paso, TDV 3D sobre volúmenes de T1
+con la receta del paper, es `train3d.py` ([Entrenar en 3D](#entrenar-en-3d)), que vino de la rama
+`3D-Training`; el siguiente es entrenar con datos QSM. Lo que cambia, más allá de la dimensión: el
+término de datos deja de ser la identidad y pasa a ser la convolución con el kernel del dipolo, que
+se anula en un cono a 54.7° del campo principal, así que el prior tiene que rellenar un nulo del
+operador y no sólo quitar ruido. `T` y `λ` se reaprenden porque dependen del término de datos; las
+unidades son ppm y no [0, 1]; la augmentación deja de ser libre, porque el eje del campo no es
+intercambiable con los otros dos; y las métricas pasan a ser RMSE, HFEN y SSIM contra COSMOS. La
+mejora candidata de más valor para QSM es entrenar a ciegas del nivel de ruido, con σ sorteado en
+cada lote, que eliminaría el reescalado entre σ ([`AGENTS.md`](AGENTS.md), «Mejoras candidatas»).
 
 ---
 

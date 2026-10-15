@@ -56,6 +56,8 @@ Claude. Ojo: `best.pth` es el de **mejor PSNR** (s1: la 100k; s0: la 64k).
 | `fig_sigma.py` | `d3_sigma_max` | segundos |
 | `eigen_lote.sh`, `eigen_extra.sh`, `eigen_cola.sh` | `salida/eig/eig_*.npz` (con `docs/avance/eigen.py`) | ~10–35 min por estado |
 | `fig_eigen.py` | `e1_eigen_comparacion`, `g6_eigen_trayectorias` | segundos |
+| `estado_100k.py` | `img_estado_100k_4modelos`, `estado_100k.md`: los cuatro al término de las 100k | ~4 min |
+| `qsm_admm.py` | `img_qsm_admm_4modelos`: los mismos cuatro dentro del ADMM de QSM | segundos |
 | `numeros.py` | `numeros.md`, `numeros.json` | segundos |
 | `vigia_instantaneas.py` | `salida/ckpt/inst/*/it*.pth` (gitignorado) | hasta que terminan las corridas |
 

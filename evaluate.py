@@ -19,9 +19,11 @@ import numpy as np
 import torch
 
 from ddr.data import ImageDataset2D, add_noise, psnr
+from ddr.data3d import UMBRAL_TEJIDO
 from ddr.model import VNet2D
+from ddr.qsm3d import nrmse_pct
 
-__all__ = ["load_vnet", "evaluate_denoising"]
+__all__ = ["load_vnet", "evaluate_denoising", "evaluate_denoising3d"]
 
 
 def load_vnet(path, device="cpu", efficient: bool = False) -> tuple[VNet2D, dict]:
@@ -58,6 +60,64 @@ def evaluate_denoising(model, dataset, sigma=25.0, sigma_ref=25.0, device="cpu",
         "psnr_noisy": float(np.mean([r["psnr_noisy"] for r in rows])),
         "psnr_denoised": float(np.mean([r["psnr_denoised"] for r in rows])),
         "per_image": rows,
+    }
+
+
+@torch.no_grad()
+def evaluate_denoising3d(model, dataset, sigma=25.0, device="cpu", seed=1234, data_range=1.0,
+                         noise_scale=255.0, amp=None, umbral_tejido=UMBRAL_TEJIDO,
+                         devuelve_primero: bool = False) -> dict:
+    """PSNR medio sobre los recortes fijos de un `VolumeDataset3D`, con una realización de ruido
+    fija por volumen: en todo el recorte y sólo en tejido (vóxeles LIMPIOS > `umbral_tejido`).
+    También el NRMSE (%) de la salida en los dos, y, si el dataset tiene `cerebro`, los PSNR en el
+    cerebro (`*_cerebro`); sin él, esas claves no están.
+
+    `amp` es el dtype de autocast del modo de la corrida (`MODES[modo]["amp"]`): se evalúa como se
+    entrena. Sin reescalado de sigma: en 3D se evalúa siempre al sigma del entrenamiento. Con
+    `devuelve_primero`, `primero` lleva limpia, ruidosa y salida del volumen 0, para la lámina.
+    """
+    tipo = torch.device(device).type
+    cerebro = getattr(dataset, "cerebro", None)
+    rows, primero = [], None
+    for i in range(len(dataset)):
+        clean, name = dataset[i]
+        clean = clean.unsqueeze(0)
+        gen = torch.Generator(device="cpu").manual_seed(seed + i)
+        noisy = add_noise(clean, sigma, gen, noise_scale)
+        entrada = noisy.to(device)
+        with torch.autocast(tipo, dtype=amp, enabled=amp is not None):
+            denoised = model(entrada, entrada)[-1].float().cpu()
+        # La máscara sale del limpio: la del ruidoso cambiaría con cada realización.
+        tejido = clean > umbral_tejido
+        # En float64: la norma de 2 M de valores en float32 acumula en float32.
+        y, x = clean.double().numpy(), denoised.double().numpy()
+        rows.append({
+            "name": name,
+            "fraccion_tejido": float(tejido.float().mean()),
+            "psnr_noisy": psnr(noisy, clean, data_range),
+            "psnr_denoised": psnr(denoised, clean, data_range),
+            "psnr_noisy_tejido": psnr(noisy[tejido], clean[tejido], data_range),
+            "psnr_denoised_tejido": psnr(denoised[tejido], clean[tejido], data_range),
+            "nrmse_denoised": nrmse_pct(x, y),
+            "nrmse_denoised_tejido": nrmse_pct(x, y, tejido.numpy()),
+        })
+        if cerebro is not None:
+            m = torch.from_numpy(cerebro[i])[None, None]
+            rows[-1].update(psnr_noisy_cerebro=psnr(noisy[m], clean[m], data_range),
+                            psnr_denoised_cerebro=psnr(denoised[m], clean[m], data_range))
+        if devuelve_primero and i == 0:
+            primero = (clean[0, 0].numpy(), noisy[0, 0].numpy(), denoised[0, 0].numpy())
+
+    claves = ["psnr_noisy", "psnr_denoised", "psnr_noisy_tejido", "psnr_denoised_tejido",
+              "nrmse_denoised", "nrmse_denoised_tejido"]
+    if cerebro is not None:
+        claves += ["psnr_noisy_cerebro", "psnr_denoised_cerebro"]
+    return {
+        "sigma": sigma,
+        "num_volumenes": len(rows),
+        **{k: float(np.mean([r[k] for r in rows])) for k in claves},
+        "per_volume": rows,
+        **({"primero": primero} if devuelve_primero else {}),
     }
 
 

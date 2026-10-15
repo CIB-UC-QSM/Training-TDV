@@ -180,6 +180,8 @@ tres mejores resultados del repositorio (31.478, 31.194, 31.155 dB) son todos bf
 los dos en **`referencia`** (`t8delta-100k-s1` @100 000 y `-s0` @64 000, cortada a mano en la
 66 000), y el 31.478 de bf16 queda tercero. Lo que el corpus viejo medía era un sesgo de **largo de
 corrida**, no de modo: ninguna corrida en `referencia` había pasado de 18 000 iteraciones cuando se
-escribió esa frase. La comparación de modos sigue sin estar hecha a iteración pareada y larga: es
-el punto 3 de la cola vieja, «¿`referencia` es de verdad peor?», que quedó abierto al cerrar la
-fase 1 (`docs/bitacora.md`, entrada del 2026-10-08).
+escribió esa frase. **La comparación de modos se hizo el 2026-10-10**, y era el punto 3 de la cola
+vieja («¿`referencia` es de verdad peor?»): `rapido-100k-s1` contra `t8delta-100k-s1`, misma
+semilla y 100 000 iteraciones, da **31.546 contra 31.547 dB**, con 49 de 50 puntos pareados dentro
+de 0.05 dB, a **2.98×** de velocidad (`docs/mediciones/rapido-vs-referencia-100k.txt`). Ninguno de
+los dos modos entrena mejor. Lo que sí se separa es `λ`: 4.7× más baja en `rapido`.

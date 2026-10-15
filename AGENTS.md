@@ -32,8 +32,8 @@ teoría, en el README.
 - **Una tanda la lanza el autor, o el agente si el autor lo pide en ese turno**, mirando antes las
   GPUs (los `plan.sh` lanzan igual): en segundo plano (`systemd-run --user` con una unidad
   `tdv-<nombre>`, o `tmux`), nunca encadenada a otra ni esperada con `until`/`sleep`.
-- **`pgrep`/`pkill`, anclados:** `^[^ ]*python[0-9.]*( +-[^ ]+)* +[^ ]*train\.py` (`pgrep -f
-  train.py` se encuentra a sí mismo). Cuenta procesos, no corridas —cada una suma 16 workers— y un
+- **`pgrep`/`pkill`, anclados:** `^[^ ]*python[0-9.]*( +-[^ ]+)* +[^ ]*train(3d)?\.py`, que cuenta
+  también las corridas de `train3d.py` (`pgrep -f train.py` se encuentra a sí mismo). Cuenta procesos, no corridas —cada una suma 16 workers— y un
   `pkill` las mata a todas; una sola se para con `systemctl --user stop <unidad>`.
 - **Con el autor:** el número antes que la interpretación, cada término definido la primera vez,
   suposición y medición dichas como tales, y un puntero (`archivo:línea`) antes que una paráfrasis.
@@ -53,8 +53,10 @@ título: no renumerar ni renombrar sin un `grep -rn` sobre `.claude/`, `scripts/
    Si no puede esperar, se para la tanda, y eso lo decide el autor. Un worktree sirve para preparar
    el cambio, no para integrarlo.
 3. **No medir con las GPUs ocupadas:** bajo contención, `cudnn.benchmark` elige otros algoritmos; y
-   un tiempo sólo se compara en la misma tarjeta. Con una tanda en vuelo, los tests van en CPU y
-   sin los cuatro PSNR del paper, que tardan minutos cada uno:
+   un tiempo sólo se compara en la misma tarjeta y **a la misma iteración**: el ETA que imprime
+   `train.py` es el promedio acumulado desde `t0`, así que a it 500 es casi todo arranque de
+   `torch.compile` y no dice nada contra uno de it 16 000. Con una tanda en vuelo, los tests van
+   en CPU y sin los cuatro PSNR del paper, que tardan minutos cada uno:
    `CUDA_VISIBLE_DEVICES="" uv run pytest -k "not published_psnr"`.
 4. **Una variable por vez.** `intermedio` y `referencia` difieren en tres cosas (TF32, determinismo,
    `benchmark`); `rapido` e `intermedio`, sólo en la precisión.
@@ -97,11 +99,23 @@ título: no renumerar ni renombrar sin un `grep -rn` sobre `.claude/`, `scripts/
 - **Clases, sólo si heredan de `nn.Module` o `Dataset`, o si las tiene el port** (skill `huella`).
 - **Sin test que los cubra:** la pérdida mira sólo `x_S`; el ruido se sortea nuevo en cada
   iteración; y no se parte del checkpoint oficial si el resultado se compara con él.
-- **Defecto conocido, sin corregir:** `rebobina()` restaura `opt.state_dict()`, y con él el lr: un
-  rebobinado que cruza un hito deshace ese halving hasta el final de la corrida. Pesa con
-  rebobinados frecuentes e hitos juntos (~46 % en `t1-rapido-30k`), y se ve en la columna `lr=` del
-  log después de un `REBOBINADO`. Al arreglarlo, y al sumar cualquier estado (EMA, otro scheduler),
-  se decide si viaja con el respaldo —la ventana sí, el lr no— y sin rebobinados nada cambia.
+- **El respaldo del rebobinado se restaura como COPIA, y el lr no vuelve con él.** Arreglado el
+  2026-10-09 en `main` y, por separado y con el mismo código, el 10-08 en la rama `3D-Training`
+  (`train3d.py` importa `rebobina()` de `train.py`); sin rebobinados nada cambia. Las dos mitades
+  siguen siendo trampas vivas para quien sume estado:
+  `opt.load_state_dict` **adopta** los tensores que recibe —sin `deepcopy`, los pasos siguientes
+  mutan el respaldo y el 2º rebobinado al mismo ya no devuelve Adam, que es el lazo de
+  `t1-guard-2delta-5k` (`docs/mediciones/alias-respaldo-adam.txt`)—, y del `state_dict` del
+  optimizador cuelga el lr, que es del calendario y no retrocede. Al sumar cualquier estado (EMA,
+  otro scheduler) se decide si viaja con el respaldo —la ventana sí, el lr no— y que nada se
+  restaure por referencia. Los dos casos tienen test en `tests/test_disyuntor.py`. **La mitad del
+  alias tiene una sola prueba en vivo, en 3D:** en `v12-control` (`ventana-3d-12h`, 2026-10-13,
+  `rapido`, una semilla) los dos rebobinados, en la 37 y la 72, fueron al mismo respaldo de la it 3,
+  y de la 73 a la 400 no hubo ni un rechazo (con el defecto, en `t1-guard-2delta-5k`, los repetidos
+  rechazaban el 96 % de las 25 siguientes; `docs/mediciones/ventana-3d-12h.txt`). En 2D sigue sin
+  ejercerse: los 19 rebobinados de las cuatro corridas de 10⁵ van a respaldos distintos. **La mitad
+  del lr no tiene prueba en vivo:** en 2D ningún rebobinado cruzó un hito, y `train3d.py` reescribe
+  el lr en cada iteración, así que ahí no se puede ejercer.
 
 ## Lo que ya se sabe
 
@@ -118,33 +132,89 @@ Medido en BSDS400 color a σ = 25: otro dominio pide volver a medirlo.
   Endpoint: sin disyuntor, el mejor PSNR; con disyuntor, el PSNR a iteración pareada —la efectiva,
   si hay muchos rebobinados (`docs/mediciones/rebobinados-t1.txt`)—.
 - **`‖g‖` se lee contra la mediana móvil de la corrida, nunca en absoluto entre configuraciones**:
-  cambia con `T_init` (`|∂L/∂T| ∝ 1/T` es el 70–86 % de `‖g‖` a 2·δ y el 27–36 % a 8·δ) y con el
-  dominio (mediana ~10 en T1 contra ~54 en BSDS, `docs/mediciones/disyuntor-t1.txt`). La cota 10⁴
-  y el hueco [6 113, 1.97·10⁵] del disyuntor son de BSDS. Con disyuntor, `max‖g‖` incluye los
-  lotes rechazados (una corrida viva llega a 1.3·10¹⁰): se miran los aceptados.
+  cambia con `T_init` (`|∂L/∂T| ∝ 1/T`) y con los canales —la `loss` suma 93·93·C—, y corregido por
+  ×3 no queda brecha medible entre T1 y BSDS (`docs/mediciones/nivel-g-t1-vs-bsds.txt`). **El guard
+  relativo es invariante de escala**: reescalar `‖g‖` entera deja el set de rechazos idéntico, así
+  que el nivel de la mediana no explica ninguna diferencia de tasa
+  (`docs/mediciones/umbral-guard-escala.txt`). La cota `GUARD_ABS` no se recalibra por dominio:
+  queda 6.0× (BSDS) y 5.0× (T1, corregido por canales) sobre el mayor `‖g‖` aceptado, y no ha
+  atrapado un lote por su cuenta en ninguno (`docs/mediciones/cotas-disyuntor-dominio.txt`).
+  `max‖g‖` incluye los rechazados: se miran los aceptados.
 - **`T` tiene una pared absorbente en 0 y dos caminos hasta ella**, que el disyuntor no ve: un
-  **pico**, si arranca cerca de `δ_Adam = lr/√(1−β₂) = 0.01265` (lo que un pico desplaza bajo Adam,
-  sea del tamaño que sea), y una **deriva** en corridas largas (desde 2·δ, `tinit/B-larga` bajó a
-  0.59·δ y murió en la it 32 750). Por eso el default es 8·δ y 2·δ es un piso, no un valor de
-  trabajo; nada verifica lo que se pase por `--t-init`. `λ → 0` es inocuo.
-- **`T_init` cambia la exposición al estallido, no el endpoint**: de 2·δ a 10·δ el PSNR pareado se
-  mueve ≤ 0.036 dB. Bajo Adam `T` no busca ningún valor, y `T* = 0.0247` es la coordenada del
-  oficial, no un destino (`(T, K_N) → (cT, K_N/c)` da el mismo modelo).
+  **pico**, si arranca cerca de `δ_Adam = lr/√(1−β₂)` —lo que un pico desplaza bajo Adam, sea del
+  tamaño que sea; derivado y medido con 3–6 % de error sobre cinco órdenes de magnitud— y una
+  **deriva** en corridas largas. **`δ_Adam` no es una constante: va con el lr vivo, y el calendario
+  lo parte a la mitad en cada hito** (`train.py:51` lo calcula una vez desde el `LR` inicial, que
+  es la trampa), así que la reserva `T/δ_vivo` se duplica sola y el riesgo se concentra en la
+  primera fase de lr.
+- **NO hay un piso en `T_init`; hay un costo continuo, y está medido a 10⁵.** La «regla 2-δ» se
+  **retiró el 2026-10-12** (fila en `## Descartado`): el factor 2 era una elección, el mismo
+  razonamiento ya estaba refutado para `λ`, y la evidencia va al revés —`tinit/B-larga` arrancó
+  **en** 2·δ y murió con `T = 0`, y `t1p1delta-rapido-100k` arrancó en **1.1·δ** y terminó las
+  100 000—. Lo medido (`docs/mediciones/modo-y-tinit-100k-s1.txt`): 8·δ → 31.547 dB con 163
+  rechazos; 2·δ → −0.011 dB con **1.99×**; 1.1·δ → −0.022 dB con **4.7×** y el 91 % de ellos en la
+  primera fase. El default es 8·δ **porque es el de la réplica**, no porque haya umbral. Nada
+  verifica lo que se pase por `--t-init`, y `λ → 0` es inocuo.
+- **`T` sola no significa nada: es una coordenada de gauge.** `(T, K_N) → (cT, K_N/c)` deja el
+  modelo **idéntico** (1e-15 en float64, `docs/mediciones/degeneracion-T-KN.txt`) porque `K_N` entra
+  lineal en `R`, así que `T·∇R` es lo invariante y `T` sola no se compara entre corridas. De ahí
+  que **`T*` no sea un atractor** —cerrado el 10-11: `T_init/δ` → `T` final`/δ` da 1.1 → 2.23,
+  2 → 2.76, 8 → 6.53, 8 → 6.83, el orden intacto— y que los 49 de 50 puntos pareados por debajo
+  del control sean un sesgo chico y consistente pero no un test de signos limpio (los puntos de
+  eval están autocorrelacionados).
 - **En denoising, `λ` es casi plana**: apagarla cuesta 0.033 dB en el oficial; daña `λ` grande
   (0.5 cuesta 0.6–1.8 dB, `docs/mediciones/lambda-sensibilidad.txt`). Con el dipolo de QSM no se
-  traslada sin medir: `w = λ/T` ya sale 1.6–2.0× más alto en T1.
+  traslada sin medir.
+- **`w = λ/T` es de gauge y NO lo usa el solver de QSM. Las dos cosas las afirmé mal y se
+  retiraron el 2026-10-12** (dos filas en `## Descartado`). Bajo `(T, K_N) → (cT, K_N/c)` el modelo
+  no cambia y `w → w/c`, así que `w` no es propiedad de la función aprendida. Y
+  `../tdv/wTDV_QSM_torch.py:188` usa la red **entera** como denoiser PnP —`vn(z·α, z·α)/α`, con
+  `α = target_std/qsm_std`— sin leer `T` ni `λ`. Lo invariante son las dos **fuerzas** del esquema
+  `x ← x − (1/S)[T·∇R(x) + λ·(x − z)]`: `T·‖∇R‖` y `λ·‖x − z‖`, y su cociente `ρ`. Medido en las
+  cuatro corridas a 10⁵ (`docs/mediciones/gauge-4-corridas.txt`): `w` abre **12.2×** pero `T·‖∇R‖`
+  queda dentro de **1.13×** y los cuatro `∇R` tienen coseno **0.978–0.987** entre sí — o sea casi
+  todo el spread de `w` era gauge. Lo que **sí** es real y separa por **modo** (no por `T_init`) es
+  la fuerza del dato: `ρ ≈ 0.15–0.18` en `referencia` contra **0.031–0.039** en `rapido`, 4.8×. Aun
+  así los cuatro denoisers coinciden a **42–46 dB** entre sí.
+- **Para un checkpoint destinado a PnP, la PSNR de denoising NO es criterio de selección.** El
+  esquema es descenso **explícito** sobre `T·R`, estable sólo si `(T/S)·λ_max(∇²R) < 2`. El
+  entrenamiento fija ese número justo bajo 2 **a la amplitud a la que entrena** —los cuatro
+  checkpoints de 10⁵ caen en 1.38–2.01 a σ = 25— y **no controla nada 4× más abajo**, que es donde
+  lo corre el solver de QSM (`target_std = 0.06`): ahí el oficial baja a **0.99** y los tres
+  nuestros suben a **2.79 / 5.76 / 23.2**, con los cuatro coincidiendo en **0.027 dB** de PSNR.
+  Dentro del ADMM eso es 27.34 % de RMSE convergiendo en 33 iteraciones contra 28.36–28.50 % sin
+  converger en 100 (2026-10-12). **Medilo antes de elegir**, que es barato y sólo necesita el
+  checkpoint: `scripts/diag_qsm_estabilidad.py`. Y ojo: la Lipschitz del denoiser con una dirección
+  aleatoria es **cota inferior** y engaña (`1.1δ` da 0.108 ahí y 5.76 por el Hessiano).
+- **Antes de investigar el solver de QSM, mirá `git log --all` de `../tdv`.** El 2026-10-12 re-derivé
+  entero un mecanismo que ya estaba medido el 10-09 en la rama `worktree-wtdv-channels-flag`
+  (commit `331491c`), porque miré el working tree de `master` y ahí no estaba: el trabajo de ese
+  repo vive en ramas de worktree, no en `master`.
+- **El solver de QSM apila tres cortes adyacentes como R, G, B** (`wTDV_QSM_torch.py:176`): usa el
+  acoplamiento de color aprendido en BSDS como prior *through-plane*. Por eso un checkpoint de **1
+  canal** —`checkpoint_qsm_rapido.pth`, `tdv3-3-25-f32-gray.pth`— **no corre ahí**: el batch es
+  `(B, 3, H, W)`.
 - **La red no es escala-equivariante** (la Student-t no es 1-homogénea; 15–28 %,
   `docs/mediciones/escala-equivariancia.txt`): el reescalado entre σ es una aproximación.
 - **La precisión no es un efecto grande** (TF32 contra bf16: 1.31×, p = 0.61,
-  `docs/mediciones/precision.txt`), pero `rapido` contra `referencia` no está medido: un PSNR de
-  uno no se compara con el del otro.
+  `docs/mediciones/precision.txt`), y a 10⁵ iteraciones **`rapido` reproduce `referencia`**: misma
+  semilla, 49 de 50 puntos pareados dentro de 0.05 dB, 31.546 contra 31.547 al final, 2.98× más
+  rápido (`docs/mediciones/rapido-vs-referencia-100k.txt`). Una semilla, y `rapido` no se puede
+  replicar contra sí misma. **Lo que sí se separa, y es invariante de gauge, es la fuerza del
+  término de dato**: `λ·‖x − z‖` queda **4.8× más chica** en `rapido`, o sea `ρ = dato/reg` de
+  0.031–0.039 contra 0.15–0.18 de `referencia`, y eso **separa por modo, no por `T_init`** (las dos
+  corridas de cada modo caen juntas). El regularizador en cambio es el mismo en los cuatro:
+  `T·‖∇R‖` dentro de 1.13× y coseno 0.978–0.987 (`docs/mediciones/gauge-4-corridas.txt`). Con un
+  término de dato que pesa 3–18 % del regularizador, 4.8× sobre él mueve el denoiser **0.08 dB**.
 - **Lo que recupera una corrida es el rebobinado**, no el rechazo: los estallidos entran por lotes
   aceptados (`docs/mediciones/tinit-10k.txt`) y todo detector sobre `‖g‖` llega un paso tarde.
   Visto en una o dos semillas, no medido como tasa. Su costo es el % de iteraciones que descarta
   (0.4 % en la réplica, 72 % en T1 a 2·δ).
-- **Las GPUs no son iguales**: la 1 (PCIe gen 4 ×4) tarda ~1.3× más que la 0 en `rapido`, así que
-  lo que se compara va a la 0. En `referencia`, dos corridas rinden 1.99×
-  (`docs/mediciones/dos-gpu.txt`). DDP está clausurado.
+- **Las dos GPUs no difieren en velocidad de forma medida**, aunque la 1 negoció PCIe gen 4 ×4 y la
+  0 gen 5 ×16: en `referencia` son 0.9 % y la 1 es la rápida —la 0 maneja el display—, y dos
+  corridas rinden 1.99× (`docs/mediciones/dos-gpu.txt`). En `rapido` no hay medición limpia: el
+  «~1.3× más lenta la 1» que decía acá era arranque de `torch.compile`, no régimen
+  (`docs/mediciones/velocidad-dos-tarjetas.txt`). DDP está clausurado.
 
 ## Lo que no sirve
 
@@ -159,7 +229,8 @@ Cerrado en `## Descartado` de la bitácora; se busca por el término.
   +0.030 dB por 18.9 h de GPU, sin overfitting).
 - **Para el disyuntor:** otro detector sobre `‖g‖` (`--guard-amp` incluido); rechazar sin
   rebobinar; la razón 31.62; la densidad de rechazos como disparador; bajar la cota a 5 000;
-  abortar tras N rechazos.
+  abortar tras N rechazos; reconstruir la ventana con los rechazados o ensanchar la razón ante un
+  rebobinado repetido —el lazo era el alias del respaldo, no la ventana—.
 - **Como criterio de muerte o de corte:** `τ·L > 2` (el oficial opera a 4.8), `growth`, `amp₀`,
   `‖Δθ‖` (dos semillas a 131.8 % de `‖θ‖` dan el mismo PSNR), extrapolar `T` o el hazard. `σ_max`
   del adjunto separa a posteriori, pero no avisa.
@@ -196,10 +267,13 @@ las imágenes de `datasets/` existen sólo en la máquina del autor.
 
 - Un worktree se crea desde `HEAD` (`git worktree add -b <rama> <ruta> HEAD`; `origin/main` puede
   ir atrás) y se le enlazan `runs` y `datasets/bsds500/images`; sin imágenes,
-  `test_reproduction.py` se saltea.
-- `scripts/guardia_tanda.py`, el hook de la regla 2: con cualquier `train.py` vivo en la máquina,
-  bloquea escribir **cualquier** `train.py` o `runs/*/plan.sh`, también de un worktree o de
-  `../QSM-TDV`. En Bash juzga el texto del comando: bloquea también una lectura que nombre
+  `test_reproduction.py` se saltea. Para `train3d.py`, también `datasets/ldm100k3d/images`,
+  `datasets/ldm100k3d/mascaras` y `datasets/qsm_cosmos` (sin ella, la evaluación QSM se apaga con
+  un aviso).
+- `scripts/guardia_tanda.py`, el hook de la regla 2: con cualquier `train.py` o `train3d.py` vivo
+  en la máquina, bloquea escribir **cualquier** `train.py`, `train3d.py` o `runs/*/plan.sh`, también
+  de un worktree o de `../QSM-TDV`. Los tests de `train3d.py` lanzan corridas cortas en
+  subprocesos, así que mientras corre la suite el hook también bloquea. En Bash juzga el texto del comando: bloquea también una lectura que nombre
   `train.py` y redirija, y deja pasar un `python3 - <<EOF`.
 - `scripts/poder_logrank.py` (regla 5), `hazard_fase1.py`, `replay_lambda_adam.py` (re-simula `λ`
   bajo otro `init` sin GPU: contesta si cruza un umbral, no cuánto tarda), los `veredicto_*.py` y

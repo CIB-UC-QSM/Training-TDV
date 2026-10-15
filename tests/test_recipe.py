@@ -43,7 +43,13 @@ def test_delta_adam_es_el_desplazamiento_publicado():
 
 
 def test_regla_2delta():
-    """LA REGLA 2-DELTA. Un pico de gradiente desplaza cualquier parámetro en `DELTA_ADAM`,
+    """Que los DEFAULTS despejen `DELTA_ADAM` con margen. El nombre dice «regla 2-delta» y esa
+    regla se **retiró el 2026-10-12** (bitácora; `## Descartado`): el factor 2 era una elección y
+    nunca predijo nada —`tinit/B-larga` arrancó EN 2·delta y murió con `T = 0`, `1.1·delta` terminó
+    las 100 000—. El test se queda porque lo que assertea sigue valiendo como tripwire de
+    procedencia: que nadie baje los init en silencio. No renombrado para no romper referencias.
+
+    Un pico de gradiente desplaza cualquier parámetro en `DELTA_ADAM`,
     cantidad que NO depende del tamaño del pico (docs/mediciones/adam-respuesta-al-pico.txt), así
     que un escalar con pared en 0 que valga menos que eso lo manda al clamp un solo lote.
     `T_INIT = 0.001` mató tres corridas por esa vía.

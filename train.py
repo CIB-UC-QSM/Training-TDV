@@ -129,9 +129,15 @@ def respalda(model: torch.nn.Module, opt: torch.optim.Optimizer,
 
 def rebobina(model: torch.nn.Module, opt: torch.optim.Optimizer,
              respaldo: tuple[dict, dict, list[float]], escala: list[float]) -> None:
-    """Vuelve pesos, momentos y ventana al respaldo: los tres son el mismo estado."""
+    """Vuelve pesos, momentos y ventana al respaldo: los tres son el mismo estado. El lr no."""
     model.load_state_dict(respaldo[0])
-    opt.load_state_dict(respaldo[1])
+    # `load_state_dict` adopta los tensores que recibe: sin la copia, los pasos siguientes mutan el
+    # respaldo y el segundo rebobinado al mismo ya no devuelve Adam (el lazo de t1-guard-2delta-5k).
+    lr = [g["lr"] for g in opt.param_groups]
+    opt.load_state_dict(copy.deepcopy(respaldo[1]))
+    # El lr es del calendario, no de la corrida: restaurarlo deshacía un halving cruzado.
+    for g, valor in zip(opt.param_groups, lr):
+        g["lr"] = valor
     # Borrarla dejaba el relativo desarmado 100 iteraciones justo al salir del evento.
     escala[:] = respaldo[2]
 
@@ -445,8 +451,10 @@ if __name__ == "__main__":
 # pesos, `m`, `v` y ventana (~4.5 MB) tras GUARD_LIMPIAS = 3 aceptadas seguidas —en un estallido
 # hay aceptadas sueltas— y a GUARD_RESPALDO = 250 iteraciones o más del anterior. A GUARD_SEGUIDOS
 # = 25 rechazos seguidos (un tramo sano llega a 18), `rebobina` vuelve ahí y sigue con lotes nuevos.
-# Ojo: `it` y el calendario no retroceden, pero el estado de Adam incluye el lr vigente. Rebobinar a
-# un respaldo anterior a un hito deshace ese halving, y el lr queda al doble del calendario.
+# `it` y el calendario no retroceden: `rebobina` restaura Adam pero conserva el lr vigente, porque
+# el `state_dict` del optimizador trae el lr del respaldo y deshacía un halving cruzado. Y restaura
+# una COPIA: `opt.load_state_dict` adopta los tensores que recibe, así que sin ella los pasos
+# siguientes mutaban el respaldo y el segundo rebobinado al mismo dejaba a Adam como estaba.
 # `--guard-amp` prueba amp = ‖p_0‖/‖p_S‖, p_s = ∂L/∂x_s (no la clave `amp` de MODES); sana, ~0.70.
 # Viene apagada: alarga el backward hasta x_0, y en los eventos medidos ‖g‖ dispara igual o antes.
 

@@ -1,7 +1,7 @@
 # t1-guard-2delta-5k
 
-**Estado:** incompleta (deducido) — en vuelo o matada, por filas no se distingue  
-**De dónde se sabe:** 1000 filas de 5000
+**Estado:** MATADA — a mano 2026-10-08: entro en el lazo del disyuntor v2 descrito en docs/bitacora.md y docs/mediciones/lazo-disyuntor-t1.txt — rebobinaba al respaldo de la it 1756 cada 26 iteraciones (GUARD_SEGUIDOS+1) con la mediana movil congelada en 18.2, sin salida posible por dentro del mecanismo. Se dejo llegar al eval de la it 3000 para que la traza del lazo quedara en disco. No murio: T quedo a 2.16x de su pared (0.02736; antes decia 2.14x, mal). CAUSA CORREGIDA el mismo dia: no era la ventana sino que el segundo rebobinado al mismo respaldo no restaura Adam (opt.load_state_dict adopta los tensores del respaldo); docs/mediciones/alias-respaldo-adam.txt.  
+**De dónde se sabe:** `estado.json`
 
 ## Configuración
 
@@ -24,29 +24,31 @@
 
 ## PSNR en `ldm100k/val`
 
-- **Mejor: 30.087 dB** en la iteración 1,000
-- Última medida: 30.087 dB en la 1,000
+- **Mejor: 30.477 dB** en la iteración 2,000
+- Última medida: 30.471 dB en la 3,000
 
 | iteración | PSNR (dB) | T | lambda |
 |---|---|---|---|
 | 1,000 | 30.087 | 0.02743 | 0.08757 |
+| 2,000 | 30.477 | 0.02746 | 0.07398 |
+| 3,000 | 30.471 | 0.02736 | 0.07392 |
 
 ## Salud del gradiente
 
-- Iteraciones con traza: **1,000**
-- `‖g‖` mediana de las aceptadas: **50.65**, máxima aceptada 668.4
+- Iteraciones con traza: **3,000**
+- `‖g‖` mediana de las aceptadas: **33.65**, máxima aceptada 668.4
 - `‖g‖` máxima vista: 9.572e+04
-- Por encima de 1e+04: **18 de 1,000 (1.80 %)**
+- Por encima de 1e+04: **28 de 3,000 (0.93 %)**
 - Primera vez por encima de 1e+04: iteración **720**
 - No finitas (NaN o inf): 0
-- `T` final 0.02742 · `lambda` final 0.08759
+- `T` final 0.02736 · `lambda` final 0.07392
 
 ## Disyuntor de lotes
 
-- Lotes rechazados: **93** de 1,000 (9.300 %)
+- Lotes rechazados: **1,192** de 3,000 (39.733 %)
 - Rechazos seguidos, máximo: **25**
-- Tandas de rechazo: 15
-- Rebobinados: **3**
+- Tandas de rechazo: 73
+- Rebobinados: **44**
 
 Las primeras tandas:
 
@@ -62,4 +64,6 @@ Las primeras tandas:
 | 716 | 1 |
 | 718 | 3 |
 | 722 | 3 |
+
+> **SE TRABÓ EN LA ITERACIÓN 2,978.** Desde ahí no se dio ningún paso: los pesos quedaron congelados y la corrida siguió gastando GPU sin que nada pudiera cambiar.
 

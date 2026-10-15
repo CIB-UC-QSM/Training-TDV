@@ -9,6 +9,9 @@ checkpoints oficiales tengan `lambda != T` **no prueba nada**, porque `lambda/T`
 gauge — transportados, son la ec. (7). Atarlos está medido y descartado: ver docs/bitacora.md.
 
 `T` está acoplado a `S`: cambiar `S` en inferencia sin reajustar `T` degrada el resultado.
+
+`VNet3D` es el mismo esquema con `TotalDeepVariation3D`: fuera del regularizador nada sabe de
+dimensiones, ni el prox ni `T` ni `lambda` ni `project_`.
 """
 
 from __future__ import annotations
@@ -19,8 +22,9 @@ import torch
 import torch.utils.checkpoint as cp
 
 from .tdv import TotalDeepVariation2D
+from .tdv3d import TotalDeepVariation3D
 
-__all__ = ["VNet2D", "L2DenoiseDataterm"]
+__all__ = ["VNet2D", "VNet3D", "L2DenoiseDataterm"]
 
 
 class L2DenoiseDataterm(torch.nn.Module):
@@ -42,6 +46,9 @@ class L2DenoiseDataterm(torch.nn.Module):
 class VNet2D(torch.nn.Module):
     """Esquema desenrollado de S pasos con regularizador TDV."""
 
+    # Atributo de clase y no submódulo: no entra en el `state_dict`, y `VNet3D` cambia sólo esto.
+    TDV = TotalDeepVariation2D
+
     def __init__(self, config: dict[str, Any], efficient: bool = False) -> None:
         super().__init__()
 
@@ -58,7 +65,7 @@ class VNet2D(torch.nn.Module):
             else:
                 self.register_buffer(name, value)
 
-        self.R = TotalDeepVariation2D(config["R"]["config"])
+        self.R = self.TDV(config["R"]["config"])
         self.D = L2DenoiseDataterm()
         self.use_prox: bool = config["D"]["config"]["use_prox"]
 
@@ -114,3 +121,9 @@ class VNet2D(torch.nn.Module):
 
     def extra_repr(self) -> str:
         return f"S={self.S}"
+
+
+class VNet3D(VNet2D):
+    """El mismo esquema con `TotalDeepVariation3D`, sobre volúmenes `[B, C, D, H, W]`."""
+
+    TDV = TotalDeepVariation3D
