@@ -61,7 +61,7 @@ from train import (BETAS, DATA_RANGE, DELTA_ADAM, FEATURES, GUARD_ABS, GUARD_LIM
 PATCH_SIZE = 48              # el menor costo por vóxel medido en la 5070 Ti: 2.26 µs a 48^3 x 4
 LOTE = 32                    # los parches del paper (sec. 5.1), no su contenido: 4.3x los valores
 MICRO_LOTE = "auto"          # es hardware, no receta: el mayor divisor de LOTE que entra (MEMORIA)
-ITERACIONES_TANDA = 40_000   # el tronco del piloto: 89 h en la 5070 Ti con lote 32 = 8x4
+ITERACIONES_TANDA = 40_000   # el tronco del piloto; su costo, en s/it, en el bloque final
 GUARDAR_CADA = 10_000        # los puntos de rama del piloto: 10 000, 20 000 y 30 000
 
 # --- MEMORIA ---------------------------------------------------------------------------------
@@ -609,7 +609,7 @@ def main(argv: list[str] | None = None) -> None:
     estado, it0 = None, 0
     if args.reanudar:
         # Sin `map_location` cada tensor vuelve a su dispositivo. Desde el arreglo de `rebobina()`
-        # (copia del respaldo, 2026-10-08 en la rama y 10-09 en `main`), el estado de Adam no
+        # (copia del respaldo, 2026-10-08), el estado de Adam no
         # comparte memoria con el respaldo tras un rebobinado.
         estado = torch.load(args.reanudar, weights_only=False,
                             map_location=None if torch.cuda.is_available() else "cpu")
@@ -1113,9 +1113,14 @@ if __name__ == "__main__":
 #                       partición, porque ninguna capa acopla muestras: el micro-lote es hardware,
 #                       no receta. En `referencia` 48^3 x 2 no entró en 16 GB: los tests y las
 #                       corridas exactas usan --micro-lote 1.
-#   ITERACIONES_TANDA   40 000, el tronco del piloto: 0.250 s por parche x 32 x 40 000 = 89 h en la
-#                       5070 Ti con micro-lote 4 (derivado; con el 2 de `auto` allá, 0.265 s y
-#                       94 h). En la tarjeta de destino no está medido.
+#   ITERACIONES_TANDA   40 000, el tronco del piloto. El costo se lee en s/it, no en horas: en la
+#                       5070 Ti, con el micro-lote 2 de `auto`, la sonda del 2026-10-13 dio
+#                       0.280–0.291 s por parche (8.96–9.30 s/it; docs/bitacora.md, pre-registro
+#                       de `ventana-3d-12h`), y esa tanda corrió a 9.17–9.24 s/it sin contar el
+#                       ADMM ni la estabilidad (docs/mediciones/ventana-3d-12h.txt). La grilla del
+#                       2026-10-08, sin el resto del bucle, daba 0.250 s por parche a micro-lote 4
+#                       y 0.265 a 2 (docs/mediciones/costo-tdv3d.txt). En otra tarjeta lo mide la
+#                       sonda, y N ≈ horas · 3 600 / (s/it), menos las validaciones.
 #   GUARDAR_CADA        10 000: las ramas del piloto salen de la 10 000, 20 000 y 30 000; también
 #                       se guarda en la última. Un estado pesa ~51 MB en la 40 000 (derivado:
 #                       pesos, m y v de Adam tres veces —la corrida, el respaldo y el mejor—,
@@ -1450,10 +1455,11 @@ if __name__ == "__main__":
 #     historia, el log y los pesos finales salen bit a bit iguales con y sin ella.
 #   - Costo, medido en la 5070 Ti (docs/mediciones/qsm-eval-gpu.txt, 2026-10-12): en `rapido`
 #     3.40 s por iteración de ADMM (44 s la primera, que compila) y 5.19 GiB de pico; en fp32 sin
-#     compilar, 25.95 s y 6.92 GiB. Una evaluación típica, ~27 iteraciones, son ~1.5 min: 0.6–2 %
-#     de un intervalo de 2 000 iteraciones a 8.0 s/it (derivado). Con una red que no corta, las
+#     compilar, 25.95 s y 6.92 GiB. Una evaluación típica, ~27 iteraciones, son ~1.5 min: 0.5–2 %
+#     de un intervalo de 2 000 iteraciones a 9.2 s/it (derivado; el s/it, de la 5070 Ti en
+#     `ventana-3d-12h`). Con una red que no corta, las
 #     100 iteraciones son ~5.7 min. En la tarjeta de destino no está medido.
-#   - `best_qsm.pth` es el checkpoint que se pasa a QSM. En main (bitácora, 2026-10-12) el PSNR de
+#   - `best_qsm.pth` es el checkpoint que se pasa a QSM. En la bitácora (2026-10-12) el PSNR de
 #     denoising no servía para elegir un prior PnP; el criterio es el NRMSE QSM entre los estados
 #     estables. Tras una evaluación QSM sin fallo, con la estabilidad en COSMOS medida sin fallo y
 #     menor que UMBRAL_ESTABILIDAD, si su NRMSE final es el menor hasta ahora se escribe con
@@ -1477,11 +1483,11 @@ if __name__ == "__main__":
 # --- ESTABILIDAD -----------------------------------------------------------------------------
 # El número del paso explícito del esquema, (T/S)·λ_max(∇²R(x)), que `ddr/qsm3d.estabilidad` mide
 # en un punto x: el paso amplifica si pasa de UMBRAL_ESTABILIDAD = 2 (el porqué y el método, en el
-# bloque final de `ddr/qsm3d.py`). Viene de `main`: el 2026-10-12 explicó por qué los checkpoints
+# bloque final de `ddr/qsm3d.py`). Viene de la 2D: el 2026-10-12 explicó por qué los checkpoints
 # 2D propios rinden peor que el oficial como prior del ADMM de QSM y no convergen. Medido a la
 # amplitud de entrenamiento (σ = 25) los cuatro dan 1.38–2.01 y el PSNR no los distingue; a la de
 # uso (la estimación inicial del ADMM llevada a std 0.06) el oficial da 0.99 y los propios
-# 2.8–23.2 (docs/bitacora.md de main, «POR QUÉ los checkpoints propios rinden peor como prior PnP
+# 2.8–23.2 (docs/bitacora.md, «POR QUÉ los checkpoints propios rinden peor como prior PnP
 # de QSM»). El PSNR de la validación es ciego a esto; este número no.
 #   - Dónde: en dos puntos, armados una vez al arrancar. `val`, el punto de entrenamiento: el cubo
 #     central de --estabilidad-lado^3 del primer recorte de evaluación, con el ruido que le pone la
@@ -1503,17 +1509,20 @@ if __name__ == "__main__":
 #     CPU, la traza, el log del entrenamiento, los pesos, Adam y los generadores salen bit a bit
 #     iguales (test).
 #   - Qué se guarda: estabilidad (el paso), lambda_max (‖Hv‖, el módulo del autovalor dominante,
-#     como en main) y estabilidad_cambio, el cambio relativo de la última iteración de la
+#     como en el script 2D) y estabilidad_cambio, el cambio relativo de la última iteración de la
 #     potencia; no el reloj, que cambiaría la fila al reanudar. El log da además el cociente de
 #     Rayleigh (el signo del dominante: ≈ −λ_max si es negativo), T y los segundos. Un cambio
 #     grande dice que las 40 iteraciones no alcanzaron: el número queda debajo del verdadero
 #     (docs/mediciones/convergencia-estabilidad.txt).
-#   - --estabilidad-lado = LADO_ESTABILIDAD = 96, el lado del script de main. Costo, medido en CPU
+#   - --estabilidad-lado = LADO_ESTABILIDAD = 96, el lado del script 2D. Costo, medido en CPU
 #     con 8 hilos y la CPU compartida (docs/mediciones/costo-estabilidad.txt, 2026-10-12): 13.9 s
 #     por validación a 32^3 y 208 s a 64^3, los dos puntos. En GPU a 96^3, derivado del fp32 de
 #     qsm-eval-gpu.txt por dos caminos: 19–36 s por punto y 39–73 s por validación, debajo del tope
 #     de 60 s por punto que fijó la especificación; 0.2–0.5 % de un intervalo de 2 000 iteraciones.
-#     Memoria, derivada de la RSS: ~9 GB a 96^3 (~2.7 a 64^3), sin medir en GPU. Si no entra, queda
+#     Medido en la 5070 Ti (docs/mediciones/ventana-3d-12h.txt): 133–134 s por corrida, en dos
+#     validaciones de dos puntos, ~33 s por punto. Memoria, derivada de la RSS: ~9 GB a 96^3
+#     (~2.7 a 64^3); en GPU no se midió aparte, y el pico de esas corridas, con ella incluida,
+#     fue 8.16 GiB. Si no entra, queda
 #     `estabilidad_fallo`; --estabilidad-lado 64 la baja ~3.4x. El número depende del lado (en el
 #     modelo de humo, 0.85 a 32^3 y 1.27 a 64^3 en COSMOS): se compara al mismo lado.
 #   - Qué decide: sólo cuál estado puede ser `best_qsm.pth` (EVALUACIÓN QSM). No corta ni cambia

@@ -27,7 +27,9 @@ aprendido tipo TDV para problemas inversos: en vez de aprender `R(x,θ)` y bajar
 se aprende el score `∇log p(x)` y se muestrea condicionando en la medición. Si en algún momento se
 evalúa un prior de difusión para QSM, este es el punto de entrada más barato.
 
-Empezar por acá y solo después ir a [[flow-matching-diffusion-2026]], que es más largo y formal.
+Empezar por acá y solo después ir a [flow-matching-diffusion-2026](flow-matching-diffusion-2026.md),
+que es más largo y formal.
 
 ---
-Ver también: [[flow-matching-diffusion-2026]], [[data-driven-inverse-problems-2025]].
+Ver también: [flow-matching-diffusion-2026](flow-matching-diffusion-2026.md),
+[data-driven-inverse-problems-2025](data-driven-inverse-problems-2025.md).

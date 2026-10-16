@@ -52,4 +52,5 @@ a costa de más tiempo de cómputo.
 Eso es precisamente el objetivo de `QSM-TDV` + este repo.
 
 ---
-Ver también: [[tdv-stable-regularizer-2020]], [[qsm-deep-learning-comparison-2025]].
+Ver también: [tdv-stable-regularizer-2020](tdv-stable-regularizer-2020.md),
+[qsm-deep-learning-comparison-2025](qsm-deep-learning-comparison-2025.md).

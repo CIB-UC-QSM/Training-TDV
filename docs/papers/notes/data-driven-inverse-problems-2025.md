@@ -15,8 +15,8 @@ del panorama completo de métodos data-driven para problemas inversos.
 - **Modelos variacionales data-driven** ← *aquí vive TDV*: el regularizador se aprende, pero la
   estructura variacional (fidelidad + regularizador) se conserva.
 - **Plug-and-play (PnP)**: sustituir el operador proximal por un denoiser genérico ← *aquí vive el
-  uso original de TDV en QSM* ([[tdv-qsm-iterative-2022]]), que mete un denoiser preentrenado como
-  paso proximal de ADMM.
+  uso original de TDV en QSM* ([tdv-qsm-iterative-2022](tdv-qsm-iterative-2022.md)), que mete un
+  denoiser preentrenado como paso proximal de ADMM.
 - **Learned iterative / unrolled schemes** ← *aquí vive el entrenamiento end-to-end de TDV*, con S
   pasos desenrollados.
 - Enfoques generativos para problemas inversos.
@@ -38,4 +38,5 @@ y las garantías de convergencia asociadas a cada familia.
 elección metodológica.
 
 ---
-Ver también: [[tdv-stable-regularizer-2020]], [[tdv-qsm-iterative-2022]].
+Ver también: [tdv-stable-regularizer-2020](tdv-stable-regularizer-2020.md),
+[tdv-qsm-iterative-2022](tdv-qsm-iterative-2022.md).

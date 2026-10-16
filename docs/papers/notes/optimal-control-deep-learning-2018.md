@@ -32,4 +32,5 @@ es la alternativa teórica que este paper ofrece — pero es un cambio grande y 
 salvo que backprop falle de verdad.
 
 ---
-Ver también: [[deep-learning-optimal-control-2019]], [[tdv-stable-regularizer-2020]].
+Ver también: [deep-learning-optimal-control-2019](deep-learning-optimal-control-2019.md),
+[tdv-stable-regularizer-2020](tdv-stable-regularizer-2020.md).

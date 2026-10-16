@@ -40,4 +40,4 @@ el que se va a juzgar cualquier número que reportemos:
   semillas. Correr varias semillas y reportar la dispersión.
 
 ---
-Ver también: [[tdv-qsm-iterative-2022]].
+Ver también: [tdv-qsm-iterative-2022](tdv-qsm-iterative-2022.md).

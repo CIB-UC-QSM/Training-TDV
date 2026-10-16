@@ -73,7 +73,8 @@ def test_binomial_blur_es_el_binomial():
 
     Comprobar sólo que sume 1 no alcanza: una caja `ones(5,5)/25` pasaría esa prueba y también
     los ocho tests de adjunta de este archivo, porque `<Kx,y> = <x,K'y>` no mira los valores.
-    Es la restricción 7 del README, listada como no negociable."""
+    Es una de las restricciones de `AGENTS.md`, «Mejoras candidatas», «Qué NO tocar»: antialias
+    binomial, no bilineal."""
     op = ConvScale2d(1, 1, kernel_size=3, bias=False)
     k = torch.tensor([1.0, 4.0, 6.0, 4.0, 1.0])
     esperado = torch.outer(k, k) / 256.0

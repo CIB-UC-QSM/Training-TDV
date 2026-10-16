@@ -6,7 +6,8 @@ Sitio: https://diffusion.csail.mit.edu/ · PDF: `../flow-matching-diffusion-2026
 ## Qué es
 
 Apuntes del curso de MIT. Más largo, más formal y más completo que
-[[diffusion-tutorial-2024]]; cubre desde la teoría hasta arquitecturas de escala real.
+[diffusion-tutorial-2024](diffusion-tutorial-2024.md); cubre desde la teoría hasta arquitecturas de
+escala real.
 
 ## Estructura
 
@@ -29,4 +30,5 @@ La sección de **guidance** es la más pertinente a problemas inversos: condicio
 una medición es formalmente el mismo problema que resolver `b = Aχ + η` con un prior aprendido.
 
 ---
-Ver también: [[diffusion-tutorial-2024]], [[data-driven-inverse-problems-2025]].
+Ver también: [diffusion-tutorial-2024](diffusion-tutorial-2024.md),
+[data-driven-inverse-problems-2025](data-driven-inverse-problems-2025.md).

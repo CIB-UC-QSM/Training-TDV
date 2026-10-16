@@ -6,7 +6,8 @@ cerebro generados por un modelo de difusión latente entrenado sobre UK Biobank,
 
 **No es QSM.** Es T1w: sirve para medir el cambio de dominio «imagen natural → corte de cerebro»,
 no «imagen natural → mapa de susceptibilidad». Nada de lo que se entrene acá se traslada a QSM sin
-volver a medirlo.
+volver a medirlo. El checkpoint `../tdv/checkpoints/checkpoint_qsm_rapido.pth` salió de acá, pese
+al nombre: es `runs/t1-rapido-30k/best.pth`.
 
 Las imágenes **no se versionan** (3.1 GB). Lo versionado de esta carpeta es `lista_eval.txt` y
 este archivo; el script que arma el cache está un nivel arriba, en

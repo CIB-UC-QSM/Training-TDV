@@ -208,9 +208,11 @@ comparar un TDV reentrenado contra el original.
 
 ---
 
-Ver también: [[tdv-qsm-iterative-2022]] (aplicación a QSM),
-[[optimal-control-deep-learning-2018]] y [[deep-learning-optimal-control-2019]] (el marco de
-control óptimo), [[data-driven-inverse-problems-2025]] (dónde encaja TDV en el panorama).
+Ver también: [tdv-qsm-iterative-2022](tdv-qsm-iterative-2022.md) (aplicación a QSM),
+[optimal-control-deep-learning-2018](optimal-control-deep-learning-2018.md) y
+[deep-learning-optimal-control-2019](deep-learning-optimal-control-2019.md) (el marco de control
+óptimo), [data-driven-inverse-problems-2025](data-driven-inverse-problems-2025.md) (dónde encaja TDV
+en el panorama).
 
 ## El conjunto admisible incluye `T = 0`, y la condición de optimalidad no lo cubre
 

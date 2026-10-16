@@ -399,7 +399,7 @@ def test_punto_qsm3d_es_la_entrada_del_primer_denoiser(sintetico):
     """El volumen entero es, bit a bit, lo que recibe el primer denoiser de un ADMM de cuatro
     iteraciones, y un cubo es su ventana centrada en la caja de la máscara. Contra la fórmula
     cerrada en float64, chi_0 = F⁻¹[mu2·D·F(W²·phase/(W² + mu2))/(mu2·D² + mu)] y alpha con la
-    desviación con n − 1 de `torch.std`: la del ADMM, no la `np.std` del script de main."""
+    desviación con n − 1 de `torch.std`: la del ADMM, no la `np.std` del script 2D."""
     entradas = []
 
     def guarda(v):

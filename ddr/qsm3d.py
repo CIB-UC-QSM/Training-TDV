@@ -53,7 +53,8 @@ Denoiser = Callable[[torch.Tensor], torch.Tensor]
 
 # --- PROTOCOLO DEL AUTOR ---------------------------------------------------------------------
 # Todos de `../tdv/wTDV_QSM_torch_3d.py`, con su línea. Con ellos y su red 2D color en los tres
-# ejes el autor reporta 26.89 % de NRMSE (`../tdv/README.md:207`). No tocar: es la referencia.
+# ejes el autor reporta 26.89 % de NRMSE (`../tdv/README.md`, «Resultados», «Script pseudo-3D»).
+# No tocar: es la referencia.
 MU = 0.008                   # :27, peso del split del prior, "según ... el Grid Search"
 MU2 = 1.0                    # :28, peso del split del término de datos
 TARGET_STD = 0.06            # :159, desviación de alpha·chi_0 en la máscara, "según Grid Search"
@@ -70,7 +71,7 @@ SIGMA_SUAVIZADO = 1.0        # :45, gaussiana sobre la máscara binaria...
 UMBRAL_SUAVIZADO = 0.5       # :45, ...umbralizada otra vez: la "máscara dura"
 
 # --- ESTABILIDAD -----------------------------------------------------------------------------
-# Los dos primeros, los de `scripts/diag_qsm_estabilidad.py` de `main` (2026-10-12), que midió el
+# Los dos primeros, los de `scripts/diag_qsm_estabilidad.py` (local; «el script 2D»), que midió el
 # número en los checkpoints 2D: con ellos, lo de acá se compara con lo de allá. El porqué de cada
 # uno, en el bloque final.
 ITERS_ESTABILIDAD = 40       # su ITERS: productos Hessiano-vector de la iteración de potencia
@@ -315,7 +316,7 @@ def estabilidad(modelo: torch.nn.Module, x: torch.Tensor | np.ndarray, *,
     pesos ni sus `.grad` (`autograd.grad` sólo respecto de x) ni el generador global: el vector
     de arranque sale de uno propio, con `semilla`.
 
-    lambda_max es ‖Hv‖ del último v, como en el script de main: el MÓDULO del autovalor dominante,
+    lambda_max es ‖Hv‖ del último v, como en el script 2D: el MÓDULO del autovalor dominante,
     al que la potencia converge desde abajo. `rayleigh`, vᵀHv, sólo da el signo (bloque final).
     Devuelve lambda_max, rayleigh, paso, T, S, iteraciones, cambio_relativo (|Δlambda|/lambda en
     la última iteración: la convergencia, que subestima el error) y segundos.
@@ -474,14 +475,14 @@ def lamina_denoising(limpia: Any, ruidosa: Any, salida: Any,
 # y su jacobiano en la parte de R es I − (T/S)·∇²R: el paso amplifica en la dirección de un
 # autovalor μ de ∇²R si |1 − (T/S)·μ| > 1, o sea si (T/S)·μ > 2 o μ < 0. Con S = 10 pasos
 # encadenados la amplificación se compone. `estabilidad` devuelve ese número, `paso`, en un punto.
-# En `main` (bitácora del 2026-10-12, «POR QUÉ los checkpoints propios rinden peor como prior PnP
+# En la bitácora (2026-10-12, «POR QUÉ los checkpoints propios rinden peor como prior PnP
 # de QSM») explicó por qué los checkpoints 2D propios no convergen como prior del ADMM: a σ = 25,
 # donde se entrenan, los cuatro dan 1.38–2.01; a la amplitud de uso de QSM, 0.99 el oficial y
 # 2.8–23.2 los propios, y el orden coincide con el de cuánto se degradan. El PSNR no los distingue.
 #   - El producto Hessiano-vector es exacto: la VJP por autograd de `R.grad`, que es el gradiente
 #     exacto de la energía escrito a mano (tests/test_gradient3d.py) y diferenciable (el
 #     entrenamiento retropropaga a través de él), así que J_grad(x)ᵀ·v = ∇²R(x)·v sin ε que
-#     elegir. El script de main usaba diferencias centradas con ε = 1e-5·mean|x| en float64; en
+#     elegir. El script 2D usaba diferencias centradas con ε = 1e-5·mean|x| en float64; en
 #     float32 la cancelación deja ~2 de 7 dígitos (ulp/ε ≈ 6e-3), y en bf16 ninguno (la ulp, 4e-3,
 #     pasa a ε): derivado, no medido. El grafo de `R.grad`
 #     se arma una vez y se recorre ITERS_ESTABILIDAD veces (`retain_graph`): cada producto cuesta
@@ -496,7 +497,7 @@ def lamina_denoising(limpia: Any, ruidosa: Any, salida: Any,
 #     de arranque sale de un generador propio en CPU (la misma secuencia en CPU y en GPU), no del
 #     global. Test: con los `.grad` de una iteración puestos, pesos, `.grad` y generador global
 #     quedan bit a bit; dentro de un autocast bf16, el resultado es el mismo bit a bit.
-#   - lambda_max es ‖Hv‖ del último v (unitario), como en el script de main: converge desde abajo
+#   - lambda_max es ‖Hv‖ del último v (unitario), como en el script 2D: converge desde abajo
 #     al MÓDULO del autovalor dominante, max|μ|, que nunca es menor que el mayor positivo y es él
 #     si el dominante es positivo. Si `paso` pasa de 2, el paso amplifica cualquiera sea el signo:
 #     con μ ≤ −2S/T, |1 − (T/S)·μ| ≥ 3. `rayleigh`, vᵀHv, da el signo (≈ −lambda_max si el
@@ -509,7 +510,7 @@ def lamina_denoising(limpia: Any, ruidosa: Any, salida: Any,
 #     convergencia-estabilidad.txt): un cambio grande dice que el número es una cota inferior de
 #     max|μ|, y uno chico no lo garantiza.
 #   - ITERS_ESTABILIDAD = 40 y SEMILLA_ESTABILIDAD = 11 son los de
-#     `scripts/diag_qsm_estabilidad.py` de main, para que los números se comparen.
+#     `scripts/diag_qsm_estabilidad.py`, para que los números se comparen.
 #     UMBRAL_ESTABILIDAD = 2 es la cuenta de arriba.
 # Test contra la Hessiana de la ENERGÍA armada entera con autograd en una red de 4 features sobre
 # 6^3, en float64: con 200 iteraciones la potencia da el módulo del autovalor dominante de
@@ -520,7 +521,7 @@ def lamina_denoising(limpia: Any, ruidosa: Any, salida: Any,
 # TARGET_STD/std(chi_0 en la máscara), con la std de `torch.std` (n − 1). No se recalcula: se
 # corre `admm_wtdv` una iteración con un denoiser que guarda su entrada, así que no puede divergir
 # del ADMM (test: bit a bit igual a la primera entrada de un ADMM de cuatro iteraciones, y a 1e-5
-# de la fórmula cerrada en float64). El script de main armaba otra cosa: tres cortes axiales
+# de la fórmula cerrada en float64). El script 2D armaba otra cosa: tres cortes axiales
 # adyacentes como RGB de 96^2, con la misma fórmula (mu2 = 1) y `np.std` (n). Acá es un cubo de
 # LADO_ESTABILIDAD^3 centrado en la caja de la máscara refinada, con la ventana de los recortes de
 # evaluación (`_recorte_centrado` de `ddr/data3d.py`): en COSMOS, la ventana [32:128, 34:130,

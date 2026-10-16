@@ -4,9 +4,9 @@ Kobler, Effland, Kunisch, Pock — arXiv:2001.05005v2, 17-feb-2020 (CVPR 2020).
 PDF: `docs/papers/tdv-linear-inverse-problems-2020.pdf` (+ `-supp.pdf`).
 
 **Es el paper *anterior* de los mismos autores.** El de referencia de este repo es
-[[tdv-stable-regularizer-2020]], que lo extiende. Esta nota existe para dejar por escrito **en qué
-se diferencian las dos recetas**, porque las diferencias no son cosméticas y es fácil citar la
-equivocada.
+[tdv-stable-regularizer-2020](tdv-stable-regularizer-2020.md), que lo extiende. Esta nota existe
+para dejar por escrito **en qué se diferencian las dos recetas**, porque las diferencias no son
+cosméticas y es fácil citar la equivocada.
 
 ## Por qué importa
 
@@ -63,7 +63,8 @@ Dos lecturas posibles, y no tenemos con qué elegir entre ellas:
 
 Lo que sí es un dato para nosotros: **10⁵ no es un límite natural del problema, es una elección**, y
 los mismos autores llegaron a entrenar 10× más. Eso pesa sobre la pregunta abierta *"¿hacían falta
-las 10⁵ iteraciones?"* del README — la respuesta del CVPR sería que hacían falta diez veces más.
+las 10⁵ iteraciones?"* que se hacía entonces el README — la respuesta del CVPR sería que hacían
+falta diez veces más.
 
 > ⚠️ **No convertir esto en una excusa para entrenar más.** La réplica sigue siendo la del paper
 > extendido: 10⁵ iteraciones con halving. Entrenar 10⁶ es una desviación, y hoy ni siquiera podemos
@@ -73,10 +74,11 @@ las 10⁵ iteraciones?"* del README — la respuesta del CVPR sería que hacían
 
 - **Teorema 3.1 — condición de optimalidad** en la forma directamente evaluable
   `−(1/N)·ΣΣ⟨pⁱ_{s+1}, (Id + (T/S)AᵀA)⁻¹(xⁱ_{s+1} − xⁱ_s)⟩ = 0`. Es la versión operativa de lo que
-  el README lista como pendiente ("condición de optimalidad de `T`").
+  el README listaba como pendiente en la fase 1 ("condición de optimalidad de `T`").
 - **Teorema 3.2 — sensibilidad al dataset de entrenamiento**: cota computable de `‖x_s − x̃_s‖` para
   dos pares de controles obtenidos de datasets distintos, en términos de la constante de Lipschitz
   `L_R` de `R`. Relevante para la fase 2, donde el dataset cambia por completo.
 
-Ver también: [[tdv-stable-regularizer-2020]] (el de referencia),
-[[optimal-control-deep-learning-2018]] y [[deep-learning-optimal-control-2019]] (el marco).
+Ver también: [tdv-stable-regularizer-2020](tdv-stable-regularizer-2020.md) (el de referencia),
+[optimal-control-deep-learning-2018](optimal-control-deep-learning-2018.md) y
+[deep-learning-optimal-control-2019](deep-learning-optimal-control-2019.md) (el marco).

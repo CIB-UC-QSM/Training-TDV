@@ -635,7 +635,7 @@ Lo vigente está en las entradas SEGUIMIENTO y EVALUACIÓN QSM del bloque final 
 
 - **2D:** ITERATIONS = 100 000 (la receta, no es el default) y --iterations con default ITERACIONES_TANDA = 10 000 (train.py:37, 55, 149).
 - **3D:** --iterations con default ITERACIONES_TANDA = 40 000 (train3d.py:57, 318). No hay constante de 100 000 en 3D.
-- **Por qué:** Es el tronco del piloto (ramas desde la 10 000, 20 000 y 30 000, de 5 000 it cada una). Costo derivado: 0.250 s/parche × 32 × 40 000 = 89 h en la 5070 Ti con micro-lote 4, 94 h con el 2 de auto (0.265 s). En la tarjeta de destino no está medido (train3d.py:774-776; bitácora l.5278-5281).
+- **Por qué:** Es el tronco del piloto (ramas desde la 10 000, 20 000 y 30 000, de 5 000 it cada una). Costo derivado: 0.250 s/parche × 32 × 40 000 = 89 h en la 5070 Ti con micro-lote 4, 94 h con el 2 de auto (0.265 s). En la tarjeta de destino no está medido (train3d.py:774-776; bitácora l.5278-5281). [2026-10-15: la sonda del 2026-10-13 midió en la 5070 Ti 0.280–0.291 s/parche con el micro-lote 2, y la tanda `ventana-3d-12h` corrió a 9.17–9.24 s/it (docs/mediciones/ventana-3d-12h.txt): el costo se lee en s/it, y las horas salen del s/it de cada tarjeta.]
 
 ### Lote (parches por paso de Adam)
 

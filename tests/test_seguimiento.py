@@ -1,8 +1,8 @@
 """El seguimiento con W&B (`ddr/seguimiento.py`): que escriba la corrida, que la identidad
 sobreviva a `--reanudar` y a las ramas, y que ningún error de wandb llegue al bucle.
 
-Los que necesitan wandb lo piden con `pytest.importorskip`: el .venv principal no lo tiene y su
-suite tiene que seguir pasando. Todo offline dentro de `tmp_path`, sin red ni credencial: lo que
+Los que necesitan wandb lo piden con `pytest.importorskip`: en un entorno sin wandb la suite
+tiene que seguir pasando. Todo offline dentro de `tmp_path`, sin red ni credencial: lo que
 W&B guardó se lee del `.wandb` de cada corrida, no de lo que el módulo dice que hizo.
 """
 

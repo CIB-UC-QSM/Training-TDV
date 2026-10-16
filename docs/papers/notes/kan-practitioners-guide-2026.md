@@ -28,11 +28,12 @@ función fija por una base aprendida.
 
 ⚠️ Antes de intentarlo, notar la restricción dura: **cualquier activación candidata debe tener
 derivada primera y segunda continuas y acotadas**, o se rompe el análisis de estabilidad de
-[[tdv-stable-regularizer-2020]] y la fuerza deja de ser el gradiente exacto de una energía. Las
-B-splines de grado ≥ 3 califican; muchas otras bases no. Además, TDV ya mostró (Tabla 1) que la
-elección del potencial mueve el PSNR en ~0.01 dB — el margen de mejora por esa vía es minúsculo.
+[tdv-stable-regularizer-2020](tdv-stable-regularizer-2020.md) y la fuerza deja de ser el gradiente
+exacto de una energía. Las B-splines de grado ≥ 3 califican; muchas otras bases no. Además, TDV ya
+mostró (Tabla 1) que la elección del potencial mueve el PSNR en ~0.01 dB — el margen de mejora por
+esa vía es minúsculo.
 
 **Uso: idea de largo plazo, baja prioridad.**
 
 ---
-Ver también: [[tdv-stable-regularizer-2020]].
+Ver también: [tdv-stable-regularizer-2020](tdv-stable-regularizer-2020.md).

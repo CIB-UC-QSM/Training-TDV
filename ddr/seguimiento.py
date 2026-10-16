@@ -402,10 +402,11 @@ def metricas_traza(traza: np.ndarray, it: int) -> dict[str, float]:
 #     iteración, no se pierde entre dos muestras), train/s_por_it y train/vram_pico_gib. Por
 #     iteración también entraba: medido offline (docs/mediciones/costo-seguimiento.txt,
 #     2026-10-12, con load average 61 en 32 CPU), 0.185 ms de mediana por llamada y p99
-#     0.335 ms, contra ~8 s de una iteración; 1 337 B por fila de 15 métricas, 53 MB a 40 000
-#     iteraciones (derivado), más 56 MB de métricas de sistema en 89 h (derivado: un registro de
-#     1 kB cada 5.8 s). Un estado pesa ~46 MB. Se eligió --log-every porque la traza ya tiene
-#     todas las filas y W&B muestra lo mismo que el log.
+#     0.335 ms, contra ~9 s de una iteración en la 5070 Ti; 1 337 B por fila de 15 métricas, 53 MB
+#     a 40 000 iteraciones (derivado), más ~0.64 MB de métricas de sistema por hora de corrida
+#     (derivado: un registro de 1 kB cada 5.8 s). Un estado pesa ~51 MB en la 40 000 (train3d.py,
+#     bloque final). Se eligió --log-every porque la traza ya tiene todas las filas y W&B
+#     muestra lo mismo que el log.
 #   - en cada validación, `registra` con val/* y `registra_imagenes` con val/denoising; en cada
 #     evaluación QSM, qsm/* y qsm/reconstruccion.
 #   - al final, después de `estado.json`, `resumen(run, <estado.json>)` y `cierra(run)`.

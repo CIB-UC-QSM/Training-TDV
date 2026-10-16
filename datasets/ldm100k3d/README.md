@@ -111,9 +111,9 @@ cachearla: `deepbet` y `hdbet`, cada uno en el Python de su propio entorno (cóm
 docstring del script), dejan su máscara en `mascaras-nifti/`; `combina`, en el `.venv`, las
 interseca, las recorta con la misma caja que la cache y escribe `mascaras/<split>/`, verificando
 que cada volumen cacheado sea, bit a bit, el que sale del NIfTI con esa caja. Los comandos y los
-tiempos (0.67 s por cerebro en GPU), en la sección «Entrenar en 3D» del
-[README principal](../../README.md). Las de `val` no las usa el entrenamiento: se generaron el
-2026-10-12 para verificar la alineación (`docs/mediciones/mascaras-val-ldm100k3d.txt`).
+tiempos (0.67 s por cerebro en GPU), en el docstring del script. Las de `val` no las usa el
+entrenamiento: se generaron el 2026-10-12 para verificar la alineación
+(`docs/mediciones/mascaras-val-ldm100k3d.txt`).
 
 ## Cómo se entrena sobre esto
 

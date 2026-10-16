@@ -79,7 +79,7 @@ no permite distinguir lo verificado de lo supuesto.
 
 *Reescrita el 2026-10-08, al cerrar la fase 1. La versión anterior está en la historia de git.*
 
-**3D, rama `3D-Training`, al 2026-10-13: `train3d.py` está listo para la corrida larga, que el
+**3D, en `main` desde el 2026-10-15: `train3d.py` está listo para la corrida larga, que el
 autor lanza en otra máquina.** Qué copiar, cómo comprobar y cómo lanzar: README, «Llevar el
 entrenamiento 3D a otra máquina». La validación mide PSNR, NRMSE, la reconstrucción QSM de COSMOS y
 el número de estabilidad PnP, y sigue en W&B. El checkpoint para QSM-TDV es `best_qsm.pth`, no
@@ -92,15 +92,16 @@ archivo. La configuración fijada el 2026-10-15 (entrada «Decisiones para la co
 - sin `--aug-ganancia`.
 
 Decisiones del autor abiertas:
-- iteraciones y `--hitos`, con el s/it de esa tarjeta;
+- N, con el s/it medido en esa tarjeta, para 72–96 h; el calendario es
+  `--iterations N --hitos N−15000 N−10000 N−5000` (con N = 40 000, `--hitos 25000 30000 35000`);
 - la opción (a) de compatibilidad con QSM-TDV (`docs/mediciones/compat-qsm-tdv.txt`);
 - ~~integrar `main` en la rama~~: hecho el 2026-10-15, al integrar la rama en `main` (entrada
   «Integración de `3D-Training` en `main`», al final);
 - si `wandb` queda como dependencia obligatoria de `main` o pasa a un extra opcional (misma
   entrada).
 
-**No hay nada corriendo, y la fase 1 está cerrada.** `runs/t8delta-100k-s1` llegó a **31.547 dB**
-en CBSD68 (σ = 25) en la iteración 100 000, modo `referencia`, contra los 31.53 publicados, y el
+**La fase 1 está cerrada** (qué corre ahora: `systemctl --user list-units 'tdv-*'`).
+`runs/t8delta-100k-s1` llegó a **31.547 dB** en CBSD68 (σ = 25) en la iteración 100 000, modo `referencia`, contra los 31.53 publicados, y el
 autor da por terminada la construcción del entrenador. El veredicto es la entrada del 2026-10-07
 (`VEREDICTO de t8delta-100k`); el cierre, con todo lo que quedó abierto, es la del 2026-10-08, al
 final de este archivo.
@@ -126,9 +127,9 @@ final de este archivo.
    de LDM_100k, 50 000 iteraciones— está **pre-registrada** en la entrada del 2026-10-07 y **no se
    lanzó**. Su `plan.sh` vive en `runs/t1-ldm100k/`, que no se versiona; los comandos están también
    en el pre-registro.
-2. **`rebobina()` está arreglado** (copia del respaldo y lr vigente): el 2026-10-08 en la rama
-   `3D-Training` y el 10-09 en `main`, con el mismo código (entradas «El lazo era Adam, no la
-   ventana», «`rebobina()` arreglado» y «ARREGLO del rebobinado en `main`»).
+2. **`rebobina()` está arreglado** (copia del respaldo y lr vigente): el 2026-10-08 en la rama 3D
+   y el 10-09 en la 2D, hoy las dos en `main`, con el mismo código (entradas «El lazo era Adam,
+   no la ventana», «`rebobina()` arreglado» y «ARREGLO del rebobinado en `main`»).
 3. **La fase 2**: el prior en QSM y, antes, el entrenamiento ciego al nivel de ruido
    (`σ ~ U(0, 55)`). Ver «Mejoras candidatas» en `AGENTS.md`.
 
@@ -973,6 +974,8 @@ contra @550).
 
 | hipótesis | veredicto | evidencia |
 |---|---|---|
+| que lo mínimo detectable en PSNR con una semilla por brazo sea **~0.33 dB** | ❌ | retirada el 2026-10-16 en la regla 5 de `AGENTS.md`. 0.33 es 2·0.164, el ancho de **una** corrida; la diferencia entre dos lleva √2: al 95 %, 1.96·√2·0.164 ≈ **0.45 dB** con σ conocida, ≈ 0.60 con σ estimada en las 6 semillas de `runs/tinit01` (t₅). Las entradas y las salidas crudas que dicen 0.33 quedan como están |
+| que `checkpoint_qsm_rapido` se haya reentrenado sobre QSM o a la amplitud de uso, y que su 1.14 **demuestre la receta** | ❌ **afirmación propia retirada** | retirada el 2026-10-15 en la revisión de los `.md`. Es byte a byte `runs/t1-rapido-30k/best.pth` (`cmp`): cortes 2D de T1 en [0, 1], 1 canal, σ = 25, `rapido`, 30 000 iteraciones. El número sigue medido (1.1376 en el punto de operación); la causa, no: contra `8δ` cambian a la vez dominio, canales, modo, iteraciones y calendario, y el oficial gris, entrenado en BSDS, también queda en 1.05. Notas en la entrada «POR QUÉ los checkpoints propios rinden peor…» y en el pre-registro de `ventana-3d-12h`, cuya `--aug-ganancia` se motivó con ese rótulo |
 | que **subir `target_std`** rescate a un checkpoint inestable en el ADMM de QSM | ❌ | predicción mía, registrada el 2026-10-12 **antes** de leer el barrido y **fallada**: pedía que `8δ` a `target_std = 0.25` bajara de 28.00 % y dio **31.2121 %**. El knob no mueve sólo la estabilidad: subir la amplitud mete la red en saturación y el prior se debilita (movimiento relativo 0.51 → 0.34 entre std 0.06 y 0.25). **`0.06` es el óptimo de todos los checkpoints**, no sólo del oficial — lo que de paso retira la idea de que el grid-search del solver estuviera atado a él |
 | que **`T·‖K_N‖`** prediga el comportamiento como prior PnP | ❌ | es invariante de gauge y **ordena** bien (0.0260 / 0.0260 / 0.0316 / 0.0659), pero `1.1δ` tiene **exactamente** el del oficial y su `λ_max(∇²R)` sale **5.1×** mayor (2044 contra 402): el Hessiano depende de toda la cadena, no de `‖K_N‖`. Lo que sí predice es `(T/S)·λ_max(∇²R)` medido a la amplitud de uso (`scripts/diag_qsm_estabilidad.py`) |
 | comparar dos modelos por sus **eigenfunciones** de `R` | ❌ | descartada el 2026-10-10 por el control que trae el propio script: a 1 000 iteraciones de `docs/avance/eigen.py` cada eigenfunción convergida correlaciona con **su propio recorte de partida** tanto como las dos entre sí —0.98716 y 0.99053 contra 0.99015 en img1, 0.93736 y 0.94581 contra 0.95126 en img2—, así que el 0.99 mide el arranque común y no el modelo. Lo que **sí** es propiedad del modelo es `∇R` evaluado en el **mismo** `x`, sin optimización ni arranque, y comparado por **coseno** porque el gauge `(T, K_N) → (cT, K_N/c)` deja el mismo modelo con otro `∇R`: 0.982 en imagen con ruido, 0.95 en limpia (`docs/mediciones/eigen-rapido-vs-referencia.txt`) |
@@ -1456,7 +1459,9 @@ justificaciones escritas:
 
 1. El punto 2 de «Restricciones matemáticas» del README dice que bias-free *«es lo que hace a la red
    escala-equivariante»*. Se corrige: bias-free es lo que hace que `R` no penalice offsets, junto con
-   la media cero de `K₁`. La equivariancia no se sigue.
+   la media cero de `K₁`. La equivariancia no se sigue. *[Nota del 2026-10-16: el README
+   reescrito ya no tiene esa lista: las restricciones están en `AGENTS.md`, «Mejoras
+   candidatas», «Qué NO tocar», y en el README, «El esquema».]*
 2. La mejora candidata de `AGENTS.md` —entrenar con σ ~ U(0,55)— tiene su justificación mal
    escrita, pero **la recomendación se refuerza**: como no hay equivariancia de la que colgarse, el
    reescalado es una aproximación real y entrenar ciego al nivel de ruido es la única vía limpia. Es
@@ -2037,7 +2042,7 @@ serializado del `.pth`, no del paper, igual que el `T_init = 0.001` letal), y é
 0.01 no se puede defender. Pero el reemplazo tampoco se puede defender por resultado, y con
 `T_init = 0.0253` —que es el default— cae justo en el brazo con la señal fea. **Queda como decisión
 abierta para el autor**, con las dos opciones y su costo escritos en
-[`docs/pendientes.md`](pendientes.md).
+`docs/pendientes.md`, eliminado el 2026-10-08.
 
 Lo que **no** cambia: la cola de corridas. El efecto más grande medido de la fase 1 sigue siendo la
 precisión (~15×), y `λ_init` juega en 1.0–2.5× sin mecanismo. El experimento 1 de `pendientes.md`
@@ -2614,7 +2619,7 @@ en ese orden: si la 1 falla, las otras dos no se hacen.
 
 ## 2026-09-20 — Las tres mediciones del amplificador adjunto: el mecanismo es el correcto, el estado no
 
-Las tres mediciones que quedaron pre-registradas esta misma mañana en [`pendientes.md`](pendientes.md)
+Las tres mediciones que quedaron pre-registradas esta misma mañana en `pendientes.md`
 §7 se corrieron el mismo día, en las dos GPUs. **La predicción central es falsa y la hipótesis
 sobrevive**, porque lo que falla es la mitad que decía *dónde* está el amplificador, no la que decía
 *qué* hace. Conviene leer esta entrada junto con la anterior: es su corrección.
@@ -3243,7 +3248,7 @@ contrafactual de `seed7` dice lo contrario con n = 1.
 
 **Consecuencia práctica:** el mecanismo está implementado, calibrado y con los tests puestos, y la
 tanda pareada de seis semillas por brazo es lo que queda. Pre-registro en
-[`pendientes.md`](pendientes.md), 9.2.
+`pendientes.md`, 9.2.
 
 ### `T_init`: no hay evidencia para subirlo, y el corpus de 5·δ es **una sola trayectoria**
 
@@ -5436,7 +5441,10 @@ cuánto pesan dos predicciones.
 - **Costo (punto 7), derivado.** En la 5070 Ti, a 0.250 s por parche (micro-lote 4): tronco =
   0.250 × 32 × 40 000 = **89 h**, y tres ramas de 5 000, **33 h**. Con el micro-lote 2 que `auto`
   elige allá (0.265 s por parche), 94 h y 35 h. En la tarjeta de destino **no está medido**: antes
-  de lanzar, correr la sonda y 200 iteraciones (abajo), y anotar acá el s/it.
+  de lanzar, correr la sonda y 200 iteraciones (abajo), y anotar acá el s/it. *[Nota del 2026-10-15:
+  en la 5070 Ti, la sonda del 2026-10-13 midió 0.280–0.291 s por parche con el micro-lote 2
+  (8.96–9.30 s/it), más que la grilla, y `ventana-3d-12h` corrió a 9.17–9.24 s/it. El piloto no se
+  lanzó, y la tarjeta de destino sigue sin medir.]*
 - **Las predicciones 1 y 2 se calibraron con el lote de BSDS**, 32 parches con 830 k valores en
   total. Con lote 8 el piloto veía del mismo orden por paso; con 32 ve 4.3×. Quedan como
   **supuestos más débiles**: si el codo no cae donde dice la 1, o el halving paga distinto de lo que
@@ -7195,6 +7203,15 @@ solver— los dos checkpoints de **1 canal**, en el punto de operación:
 es *cómo* llegó ahí: su `T = 0.0956` es prácticamente el de nuestro `8δ` (0.0826) — no es que tenga
 el escalar más chico. Lo que bajó es `λ_max`, **118.97 contra 2809.34, un factor de 23.6**. O sea
 que reentrenar en el dominio y a la amplitud de uso cambia **el regularizador**, no la coordenada.
+*[Nota del 2026-10-15: `checkpoint_qsm_rapido.pth` no se reentrenó sobre QSM. Es byte a byte
+`runs/t1-rapido-30k/best.pth` (comprobado con `cmp`): cortes 2D de T1 de `datasets/ldm100k` en
+[0, 1], 1 canal, σ = 25, `rapido`, 30 000 iteraciones con lr/2 en la 20 000 y la 25 000. No vio QSM
+ni la amplitud de uso. Lo medido sigue en pie: 1.1376 en el punto de operación y un `λ_max` 23.6×
+menor que el de `8δ`, con una `T` parecida. La causa, no: contra `8δ` cambian a la vez el dominio
+(T1 contra BSDS), los canales (1 contra 3), el modo, las iteraciones y el calendario, y el oficial
+en gris, que los autores entrenaron en BSDS, también queda estable (1.05). Se retiran «la receta
+ya está demostrada» y «reentrenar en el dominio y a la amplitud de uso cambia el regularizador».
+Crudo: `docs/mediciones/qsm-prior-4corridas.txt`, bloque 7.]*
 
 Con eso la separación en el punto de operación es total: los tres que funcionan están en
 **0.99 / 1.05 / 1.14** y los tres que no, en **2.79 / 5.76 / 23.2**. Es exactamente lo que el
@@ -7203,7 +7220,15 @@ criterio pide, y es lo que el barrido de `target_std` no podía lograr desde afu
 El problema práctico es otro: **ese checkpoint es de 1 canal y `wTDV_QSM_torch.py` no lo puede
 correr**, porque arma el batch con tres cortes adyacentes como RGB. Las dos salidas son adaptar el
 solver —meter los cortes por la dimensión de batch en vez de la de canal, perdiendo el prior
-through-plane— o reentrenar con `--channels 3` sobre QSM.
+through-plane— o reentrenar con `--channels 3` sobre QSM. *[Nota del 2026-10-15: los de 1.05 y
+1.14 no se corrieron en este ADMM, así que «funcionan» es una inferencia desde el número. En
+`../tdv`, `checkpoint_qsm_rapido` corrido corte a corte con μ = 0.008 y `target_std` = 0.06 no
+converge (Update ~17, RMSE ~30 %), y su mejor combinación de la grilla (μ = 0.02, `target_std` =
+0.1) da 30.35 % contra 27.34 % del color (`../tdv/wTDV_QSM_torch.py`, «LOG DE OPTIMIZACIONES»,
+punto 6, del commit `cc1bdd8` del 2026-10-08, en la rama `worktree-wtdv-channels-flag`). Es el
+mismo hueco que mostró `ventana-3d-12h`: estable no es convergente. Esa rama entró en el `master`
+de `../tdv` el 2026-10-13: desde entonces el solver corre modelos de 1 canal con `--channels 1`,
+corte a corte.]*
 
 ### Lo que esto significa para el 3D
 
@@ -7715,7 +7740,12 @@ entrenamiento fija la estabilidad donde entrena; 4× más abajo no lo controla n
 amplitud de uso lo arregló (`checkpoint_qsm_rapido`: 1.08). *[Nota del 2026-10-15, al integrar
 `3D-Training` en `main`: en `main` se rehízo con el protocolo fino —40 iteraciones de potencia,
 float64— y da 1.1376 (6190bfd; entrada «POR QUÉ los checkpoints propios rinden peor…»): sigue debajo
-de 2.]* `train3d.py` ahora mide ese número en cada validación (`qsm/estabilidad`, `val/estabilidad`)
+de 2.]* *[Otra nota del 2026-10-15: ese checkpoint no se entrenó a la amplitud de uso ni sobre
+QSM. Es `runs/t1-rapido-30k/best.pth`, cortes 2D de T1 en [0, 1] a σ = 25 (`cmp`). El precedente
+que motivaba `--aug-ganancia` no existía: ningún checkpoint del repo se había entrenado a la
+amplitud de uso. La Q2 se planteó sobre ese rótulo, y su resultado, abajo, fue en dirección
+contraria en COSMOS.]*
+`train3d.py` ahora mide ese número en cada validación (`qsm/estabilidad`, `val/estabilidad`)
 junto con el NRMSE de la reconstrucción QSM. `--aug-ganancia G` (implementada y apagada desde
 `9a94eaf`) multiplica cada parche limpio por un factor log-uniforme en [1/G, G] antes del ruido: con
 G = 4 el entrenamiento ve amplitudes de ¼ a 4×, que cubren la de uso. Es una variable sola contra el
@@ -7958,13 +7988,19 @@ El autor fija lo que faltaba antes de llevar la rama a la máquina nueva:
   autor era el tiempo. Por iteración no cuesta nada: la esquina sale de una lista. Al arrancar,
   leer las máscaras lleva 0.06 s por volumen, ~2 min para los 2 000, y las esquinas ocupan
   ~0.4 GB de RAM (derivado de los 0.06 s y ~0.2 MB por volumen del README, «Cubos 100 %
-  cerebro»). El precio es otro, y es de receta: la periferia. A 48³ los cubos cubren el 66 % del cerebro y el 18.5 % de la franja cortical
+  cerebro»). *[Nota del 2026-10-16: el README reescrito ya no tiene esa subsección; las dos
+  cifras están en `ddr/data3d.py`, bloque final, «CUBOS DE CEREBRO».]*
+  El precio es otro, y es de receta: la periferia. A 48³ los cubos cubren el 66 % del cerebro y el 18.5 % de la franja cortical
   (≤ 6 mm del borde). La red no ve el borde del cerebro, y el ADMM sí se lo pasa: lo que eso le
   hace al NRMSE QSM no está medido. La evaluación QSM de cada validación lo va a mostrar.
 - **`--aug-ganancia` queda apagada**: la `ventana-3d-12h` no la sostiene como arreglo de la
   estabilidad en COSMOS.
 - **Abierto:** las iteraciones y los `--hitos`. Se fijan con el s/it de la tarjeta, que no está
-  medido, para que entren en 48–72 h.
+  medido, para que entren en 48–72 h. *[Nota del 2026-10-15, más tarde: el autor habla
+  ahora de 72–96 h, con el calendario `--iterations N --hitos N−15000 N−10000 N−5000`: tres lr/2,
+  a 15 000, 10 000 y 5 000 iteraciones del final (con N = 40 000, `--hitos 25000 30000 35000`). N
+  se fija después de medir el s/it en la tarjeta: N ≈ horas · 3 600 / (s/it), menos las
+  validaciones.]*
 - **Seguimiento: W&B**, que el autor dio como opción junto a Comet ML. Registra:
   - `train/*` cada `--log-every`;
   - la validación (`val/*`), la QSM (`qsm/*`) y la estabilidad;
@@ -8006,4 +8042,36 @@ bitácora están ahí.
   - `checkpoint_qsm_rapido.pth` es byte a byte `runs/t1-rapido-30k/best.pth` (cortes 2D de T1,
     30 000 iteraciones, lr/2 en la 20 000 y la 25 000; comprobado con `cmp`). No se reentrenó
     sobre QSM, como dice la entrada «POR QUÉ los checkpoints propios rinden peor…». Se corrige en
-    la revisión de los `.md`.
+    la revisión de los `.md`. *[Hecho el 2026-10-15: notas en esa entrada y en el pre-registro de
+    `ventana-3d-12h`, y fila en `## Descartado`. `docs/mediciones/qsm-prior-4corridas.txt`, que
+    repite el rótulo, no se edita: lo corrige la nota de la entrada, que lo cita.]*
+
+---------------------------------------------------------------------------------------------------
+
+## 2026-10-16 — README y AGENTS.md reescritos: guía para personas y contexto para agentes
+
+- **Qué cambió.** El README pasa de 86 kB a ~26 kB y queda como guía de uso para un estudiante, con
+  la estructura del repositorio al principio y sin «Estado y lo que sigue» ni las listas de lo
+  descartado, que siguen acá (`## Cómo retomar`, `## Descartado`). `AGENTS.md` pasa de 22.5 kB a
+  ~20 kB y absorbe lo operativo. Las citas a títulos que el README ya no tiene apuntan a los nuevos
+  o, en una entrada vieja, llevan una nota fechada.
+- **Cómo se juzgó.** Un «estudiante» siguió el README con datos propios, 2D y 3D, en una copia
+  limpia, y quedó conforme con reparos; un «académico» revisó la precisión. Se aplicaron los
+  reparos de los dos.
+- **Medido de paso.** Una corrida 3D de prueba a 24³ con lote 8 (`rapido`, 300 iteraciones, en la
+  5070 Ti) tuvo un pico de VRAM de **8.16 GiB** contra **4.14** predichos (su `estado.json`): la
+  predicción cubre sólo el entrenamiento, no la validación (recortes de 128³, estabilidad en 96³).
+  Los dos brazos de `ventana-3d-12h`, a 48³ y con 7.67 predichos, marcaron el mismo 8.16. Y una
+  rama 3D reanudada desde `estado-000010.pth` dio una traza idéntica bit a bit, en CPU y
+  `referencia` (lo informó el estudiante; la comparación no quedó en disco).
+- **Regla 5 corregida en `AGENTS.md`.** Con sd 0.164 dB entre semillas, lo mínimo detectable entre
+  dos corridas de una semilla es ≈ 0.45 dB al 95 % (1.96·√2·σ), no 0.33, que era 2σ sin el √2.
+  Las salidas crudas viejas que dicen 0.33 no se reescriben. Fila en `## Descartado`.
+- **Pendiente en `train.py`, que no se toca con una tanda en vuelo (regla 2):**
+  - la línea 51 comenta `DELTA_ADAM` como «el piso de la regla 2-delta», que se retiró el
+    2026-10-12;
+  - el `--help` de `--checkpointing` (~:191) dice −70 % de memoria y +30 % de tiempo. El banco
+    medido da 10.1 → 2.2 GB y 1.00 → 1.31 s/it, o sea −78 % y +31 %, que es lo que dice el README.
+    Ese banco está en el README de `ff4aa3c`, no en `docs/mediciones/`.
+- **El «0.33 dB» sigue en `docs/presentacion/`** (`estado_100k.py`, `guion.txt`), que se usa para
+  presentar. Se corrige cuando se vuelva a generar la presentación.

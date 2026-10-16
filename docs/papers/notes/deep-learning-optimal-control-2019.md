@@ -30,4 +30,5 @@ Dos cosas concretas:
 Nivel de uso: **teórico de fondo.** No hay nada que copiar directamente.
 
 ---
-Ver también: [[optimal-control-deep-learning-2018]], [[tdv-stable-regularizer-2020]].
+Ver también: [optimal-control-deep-learning-2018](optimal-control-deep-learning-2018.md),
+[tdv-stable-regularizer-2020](tdv-stable-regularizer-2020.md).
