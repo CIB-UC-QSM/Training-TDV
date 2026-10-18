@@ -25,6 +25,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from ddr.data import ImageDataset2D, PatchDataset2D, add_noise
+from ddr.data3d import add_noise_ciego
 from ddr.model import VNet2D
 from evaluate import evaluate_denoising
 
@@ -48,7 +49,7 @@ MICRO_BATCH = 16
 ACUMULACION = BATCH_SIZE // MICRO_BATCH
 
 # --- CONTROLES APRENDIDOS --------------------------------------------------------------------
-DELTA_ADAM = LR / math.sqrt(1 - BETAS[1])   # = 0.01265, el piso de la regla 2-delta
+DELTA_ADAM = LR / math.sqrt(1 - BETAS[1])   # = 0.01265, el paso de Adam ante un pico
 T_INIT = 8 * DELTA_ADAM # Cercano a 0.1
 # `ITERATIONS` es la receta publicada y no se toca. Las tandas de trabajo corren 10k: con T en
 # 10 delta la PSNR llega a su mejor valor antes de la it 5000 y los eventos caen antes de la 4500.
@@ -148,7 +149,12 @@ def main() -> None:
     p.add_argument("--mode", choices=MODES, default="referencia")
     p.add_argument("--iterations", type=int, default=ITERACIONES_TANDA)
     p.add_argument("--t-init", type=float, default=T_INIT)
-    p.add_argument("--sigma", type=float, default=SIGMA)
+    p.add_argument("--sigma", type=float, default=SIGMA,
+                   help="sigma del ruido de entrenamiento y, siempre, el de la evaluación")
+    # Candidata de la fase 2, apagada: con el default la corrida es la receta.
+    p.add_argument("--sigma-max", type=float, default=0.0,
+                   help="> 0 sortea sigma ~ U(--sigma-min, --sigma-max) por parche (ruido ciego)")
+    p.add_argument("--sigma-min", type=float, default=0.0)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--log-every", type=int, default=250)
     p.add_argument("--eval-every", type=int, default=2000)
@@ -189,8 +195,11 @@ def main() -> None:
     p.add_argument("--guard-amp", type=float, default=float("inf"),
                    help="rechaza también si la amplificación adjunta ||p_0||/||p_S|| supera esto")
     p.add_argument("--checkpointing", action="store_true",
-                   help="recomputa el forward en el backward: -70%% de memoria, +30%% de tiempo")
+                   help="recomputa el forward en el backward: -78%% de memoria, +31%% de tiempo")
     args = p.parse_args()
+    if args.sigma_max > 0 and not 0 <= args.sigma_min <= args.sigma_max:
+        p.error(f"--sigma-min {args.sigma_min:g} tiene que estar en [0, --sigma-max "
+                f"{args.sigma_max:g}]")
 
     mode = MODES[args.mode]
     out = Path(args.out)
@@ -249,7 +258,9 @@ def main() -> None:
           f"batch {BATCH_SIZE} = {ACUMULACION}x{MICRO_BATCH} | modo {args.mode} | "
           f"datos {args.data_root} ({args.channels}ch, {len(train_set.images)} imgs, "
           f"{len(eval_set)} de eval) | hitos lr {hitos} | "
-          f"T_init={args.t_init:g} | lambda_init={LAMBDA_INIT:g} | clip={args.clip:g} | "
+          f"T_init={args.t_init:g} | lambda_init={LAMBDA_INIT:g} | "
+          + (f"sigma~U({args.sigma_min:g}, {args.sigma_max:g}) | " if args.sigma_max > 0 else "")
+          + f"clip={args.clip:g} | "
           f"guard={args.guard:g}x mediana({args.guard_ventana}) | abs={args.guard_abs:g} | "
           f"rebobina a los {args.guard_seguidos} seguidos | respaldo tras "
           f"{args.guard_limpias} limpias | guard_amp={args.guard_amp:g}"
@@ -277,7 +288,12 @@ def main() -> None:
         for _ in range(ACUMULACION):
             # El ruido se suma en CPU antes de subir: una transferencia por tensor en vez de tres.
             lote = next(lotes)
-            noisy = add_noise(lote, args.sigma, noise_gen, NOISE_SCALE).to(device, non_blocking=True)
+            if args.sigma_max > 0:
+                noisy = add_noise_ciego(lote, args.sigma_min, args.sigma_max, noise_gen,
+                                        NOISE_SCALE)[0].to(device, non_blocking=True)
+            else:
+                noisy = add_noise(lote, args.sigma, noise_gen, NOISE_SCALE).to(device,
+                                                                              non_blocking=True)
             clean = lote.to(device, non_blocking=True)
             # Materializar `dL/dx_0` cuesta un vjp más por el paso 0. Medido el 2026-10-03
             # sobre 120 iteraciones en `referencia`: no mueve la trayectoria ni un bit.
@@ -424,8 +440,9 @@ if __name__ == "__main__":
 # el esquema devuelve `z` sin tocar; λ = 0 apaga el término de datos y al checkpoint oficial le
 # cuesta 0.033 dB (`docs/mediciones/lambda-sensibilidad.txt`).
 # δ_Adam = lr/√(1−β₂) = 0.01265 es lo que Adam mueve un parámetro ante un pico de cualquier tamaño,
-# en régimen (t ≫ 1/(1−β₂) = 1000). Regla 2-δ: un escalar con pared en 0 arranca en 2·δ_Adam o
-# más; `tests/test_recipe.py` la exige a T_INIT y LAMBDA_INIT. Ningún init es del paper.
+# en régimen (t ≫ 1/(1−β₂) = 1000). La «regla 2-δ» (arrancar en 2·δ_Adam o más) se retiró el
+# 2026-10-12: el 2 era una elección y no predijo nada. `tests/test_recipe.py` la sigue pidiendo a
+# T_INIT y LAMBDA_INIT como higiene. Ningún init es del paper.
 # T_INIT = 8·δ_Adam ≈ 0.1012: con él, una corrida de 10⁵ iteraciones en `referencia` llega a
 # 31.547 dB en CBSD68, contra 31.53 publicado. Entre 2·δ y 10·δ la PSNR no se mueve de forma
 # medible (0.015 dB a 10 000 iteraciones): `T_init` cambia cuántos estallidos hay que contener.
@@ -481,6 +498,10 @@ if __name__ == "__main__":
 # generador. T y λ se aprenden para esa escala, y por eso `datasets/cache_ldm100k.py` lleva cada
 # volumen de resonancia a [0, 1] por el percentil 99.5 de sus voxels positivos. Semillas: torch,
 # `--seed`; parches, `seed·100`, un generador por índice ajeno al worker; ruido, `seed·100 + 1`.
+# Con --sigma-max > 0 el ruido es ciego: cada parche sortea su sigma ~ U(--sigma-min, --sigma-max)
+# del mismo generador, antes que su ruido (`add_noise_ciego`, la misma función que el 3D). La
+# evaluación sigue a --sigma, en CBSD68 a 25. Con la bandera en 0 la rama nueva no corre y la
+# corrida es bit a bit la de antes (120 iteraciones en `referencia`, 2026-10-16).
 
 ---------------------------------------------------------------------------------------------------
 

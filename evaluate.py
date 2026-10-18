@@ -20,17 +20,19 @@ import torch
 
 from ddr.data import ImageDataset2D, add_noise, psnr
 from ddr.data3d import UMBRAL_TEJIDO
-from ddr.model import VNet2D
+from ddr.model import VNet2D, VNet3D
 from ddr.qsm3d import nrmse_pct
 
 __all__ = ["load_vnet", "evaluate_denoising", "evaluate_denoising3d"]
 
 
-def load_vnet(path, device="cpu", efficient: bool = False) -> tuple[VNet2D, dict]:
-    """Carga un checkpoint (oficial o propio). `strict=True` a propósito: si el port divergiera
-    en nombres o formas, queremos que falle ruidosamente."""
+def load_vnet(path, device="cpu", efficient: bool = False) -> tuple[VNet2D | VNet3D, dict]:
+    """Carga un checkpoint (oficial o propio), 2D o 3D según el `type` de su regularizador: los
+    de `train3d.py` dicen `tdv3d`. `strict=True` a propósito: si el port divergiera en nombres o
+    formas, queremos que falle ruidosamente."""
     ck = torch.load(path, map_location="cpu", weights_only=False)
-    model = VNet2D(ck["config"], efficient=efficient)
+    vnet = VNet3D if ck["config"]["R"].get("type") == "tdv3d" else VNet2D
+    model = vnet(ck["config"], efficient=efficient)
     model.load_state_dict(ck["model"], strict=True)
     return model.to(device).eval(), ck["config"]
 

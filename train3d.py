@@ -14,6 +14,9 @@ Adam con el lr del calendario -> re-proyección.
     uv run train3d.py --out runs/ciego3d --sigma-max 55              # ruido ciego U(0, 55)
     uv run train3d.py --out runs/cerebro3d --hitos --mascara-cerebro # cubos 100 % cerebro
     uv run train3d.py --out runs/tronco3d --hitos --eval-qsm-cada 10000   # QSM cada 10 000
+    uv run train3d.py --out runs/tronco3d --hitos --meseta 2         # lr/2 si el QSM se estanca
+    uv run train3d.py --out runs/sobreajuste --sobreajuste --lote 4 --hitos --iterations 2000 \\
+        --eval-every 250 --qsm-datos '' --estabilidad-lado 0         # prueba de sobreajuste
     wandb sync runs/tronco3d/wandb/offline-run-*                     # subir una corrida offline
 
 Ojo con `--hitos`: sin la bandera el calendario es el del paper (lr/2 cada 25 000); `--hitos` sola
@@ -60,7 +63,7 @@ from train import (BETAS, DATA_RANGE, DELTA_ADAM, FEATURES, GUARD_ABS, GUARD_LIM
 # cada número tiene su porqué en el bloque final.
 PATCH_SIZE = 48              # el menor costo por vóxel medido en la 5070 Ti: 2.26 µs a 48^3 x 4
 LOTE = 32                    # los parches del paper (sec. 5.1), no su contenido: 4.3x los valores
-MICRO_LOTE = "auto"          # es hardware, no receta: el mayor divisor de LOTE que entra (MEMORIA)
+MICRO_LOTE = "auto"          # es hardware, no receta: el que parte LOTE en menos pasadas (MEMORIA)
 ITERACIONES_TANDA = 40_000   # el tronco del piloto; su costo, en s/it, en el bloque final
 GUARDAR_CADA = 10_000        # los puntos de rama del piloto: 10 000, 20 000 y 30 000
 
@@ -119,15 +122,22 @@ QSM_ORIGEN = "../tdv/data_mat"                    # de dónde se copian: el repo
 # pasa explícita: el punto de validación lleva el mismo ruido que ve la validación.
 SEMILLA_VAL = 1234
 
+# --- MESETA ----------------------------------------------------------------------------------
+# Con --meseta N, el NRMSE QSM decide el lr: N evaluaciones seguidas sin bajar del mejor visto dan
+# lr/2 desde la iteración siguiente, y agotadas las mitades la meseta siguiente corta. El tope de
+# 5 es el que se pidió el 2026-10-16; el porqué de cada regla, en el bloque final.
+MESETA_MITADES = 5
+
 # Banderas que pueden cambiar al reanudar. Las primeras no tocan la aritmética, tampoco las del
 # seguimiento, la evaluación QSM y la estabilidad (test). `micro_lote` y `vram_gb` (que lo elige
 # con `auto`) cambian el orden de suma del gradiente, no la receta (con --sigma-max o --guard-amp,
 # algo más: bloque final): seguir en otra tarjeta está permitido, y `--reanudar` avisa que desde
-# ahí no es bit a bit. Una rama (otro `--out`) puede cambiar además `--hitos`; nada más.
+# ahí no es bit a bit. Una rama (otro `--out`) puede cambiar además el calendario (CALENDARIO).
 LIBRES = frozenset({"out", "reanudar", "iterations", "log_every", "eval_every", "guardar_cada",
                     "workers", "micro_lote", "vram_gb", "sonda_vram", "seguimiento",
                     "wandb_proyecto", "qsm_datos", "eval_qsm_cada", "qsm_max_iter",
                     "estabilidad_lado"})
+CALENDARIO = frozenset({"hitos", "meseta", "meseta_mitades"})
 COLUMNAS = 14
 
 
@@ -159,19 +169,30 @@ def vram_predicha(micro: int, patch: int, modo: str, checkpointing: bool,
     return FIJA + micro * patch ** 3 * por_voxel
 
 
-def divisores(n: int) -> list[int]:
-    return [d for d in range(1, n + 1) if n % d == 0]
+def particion(lote: int, micro: int) -> list[int]:
+    """Los micro-lotes de un lote: ceil(lote / micro) trozos que difieren a lo sumo en uno, los
+    mayores primero. 32 con 12 da 11 + 11 + 10; con un divisor, todos iguales a `micro`."""
+    trozos = -(-lote // micro)
+    base, resto = divmod(lote, trozos)
+    return [base + 1] * resto + [base] * (trozos - resto)
+
+
+def tamanos_utiles(lote: int) -> list[int]:
+    """El mayor trozo de cada partición posible, de menor a mayor: para 32, de 1 a 8, 11, 16 y 32.
+    Un micro-lote entre dos de estos da los mismos trozos que el menor y pide más memoria."""
+    return sorted({particion(lote, m)[0] for m in range(1, lote + 1)})
 
 
 def micro_lote_auto(lote: int, patch: int, modo: str, checkpointing: bool, presupuesto: float,
                     entrada_con_grad: bool = False) -> int:
-    """El mayor divisor de `lote` cuyo pico predicho no pasa de `presupuesto · (1 − MARGEN)` GiB.
+    """El micro-lote que parte `lote` en menos trozos con un pico predicho que no pasa de
+    `presupuesto · (1 − MARGEN)` GiB: el mayor de `tamanos_utiles` que entra.
 
-    Un divisor y no el mayor entero que entra: el lote es la receta y se parte entero (a 48^3 en
-    48 GiB entrarían 12, y da 8). `ValueError` si no entra ni un parche.
+    A 48^3 en 48 GiB entran 12 y da 11 (32 = 11 + 11 + 10): las mismas tres pasadas que 12, con
+    menos memoria. `ValueError` si no entra ni un parche.
     """
     util = presupuesto * (1 - MARGEN)
-    entran = [n for n in divisores(lote)
+    entran = [n for n in tamanos_utiles(lote)
               if vram_predicha(n, patch, modo, checkpointing, entrada_con_grad) <= util]
     if not entran:
         raise ValueError(
@@ -203,6 +224,28 @@ def lr_en(it: int, hitos) -> float:
     veces, como en `MultiStepLR`.
     """
     return LR * 0.5 ** sum(h <= it - 1 for h in hitos)
+
+
+def meseta_nueva() -> dict:
+    """El estado de --meseta al arrancar: sin hitos propios, sin evaluaciones y sin mejor."""
+    return {"hitos": [], "sin_mejora": 0, "mejor": None, "it_mejor": None}
+
+
+def paso_meseta(meseta: dict, nrmse: float, it: int, paciencia: int, mitades: int) -> str:
+    """Anota en `meseta` el NRMSE QSM de la evaluación de la iteración `it` y devuelve qué hacer:
+    "mejora", "espera", "mitad" (lr/2 desde la `it + 1`: `it` pasa a sus hitos) o "corte". Un NRMSE
+    que no es finito no mejora; tras una mitad, la cuenta vuelve a cero y el mejor se conserva."""
+    if math.isfinite(nrmse) and (meseta["mejor"] is None or nrmse < meseta["mejor"]):
+        meseta.update(mejor=nrmse, it_mejor=it, sin_mejora=0)
+        return "mejora"
+    meseta["sin_mejora"] += 1
+    if meseta["sin_mejora"] < paciencia:
+        return "espera"
+    meseta["sin_mejora"] = 0
+    if len(meseta["hitos"]) < mitades:
+        meseta["hitos"].append(it)
+        return "mitad"
+    return "corte"
 
 
 def lee_lista(path) -> list[str]:
@@ -391,13 +434,13 @@ def commit_git() -> str | None:
 
 
 def sonda_vram(model, args, mode: dict, presupuesto: float, out: Path) -> None:
-    """SONDA_ITERACIONES de forward + backward con cada divisor de `--lote`, de menor a mayor,
-    hasta el primero que no entra: el pico medido contra el predicho, y los segundos por parche de
-    las iteraciones que no compilan. El modelo llega compilado como para entrenar. Mide el
-    entrenamiento, no la evaluación. En `--out` deja sólo `sonda-vram.json`.
+    """SONDA_ITERACIONES de forward + backward con cada micro-lote de `tamanos_utiles(--lote)`, de
+    menor a mayor, hasta el primero que no entra: el pico medido contra el predicho, y los segundos
+    por parche de las iteraciones que no compilan. El modelo llega compilado como para entrenar.
+    Mide el entrenamiento, no la evaluación. En `--out` deja sólo `sonda-vram.json`.
     """
     util = presupuesto * (1 - MARGEN)
-    candidatos = divisores(args.lote)
+    candidatos = tamanos_utiles(args.lote)
     con_grad = math.isfinite(args.guard_amp)
     # Cada micro-lote son dos entradas de `R.grad` en la caché de dynamo (el primer paso con x sin
     # gradiente y los demás con; medido en CPU el 2026-10-09), y pasado `recompile_limit` (8)
@@ -492,8 +535,9 @@ def opciones() -> argparse.ArgumentParser:
     p.add_argument("--patch", type=int, default=PATCH_SIZE)
     p.add_argument("--lote", type=int, default=LOTE, help="parches por iteración: es receta")
     p.add_argument("--micro-lote", type=entero_o_auto, default=MICRO_LOTE,
-                   help="parches por backward, un divisor de --lote. `auto`: el mayor que entra "
-                        "en --vram-gb según el modelo de memoria")
+                   help="máximo de parches por backward: el lote se parte en ceil(lote/m) trozos "
+                        "casi iguales (32 con 12: 11 + 11 + 10). `auto`: el que deja menos "
+                        "trozos y entra en --vram-gb según el modelo de memoria")
     p.add_argument("--vram-gb", type=float, default=VRAM_GB,
                    help="presupuesto en GiB, como los reporta torch: algo menos que la etiqueta "
                         "(la 5070 Ti de «16 GB» da 15.45); 44.7 si se pactaron 48 GB decimales. "
@@ -505,6 +549,16 @@ def opciones() -> argparse.ArgumentParser:
     p.add_argument("--hitos", type=int, nargs="*", default=None,
                    help="iteraciones tras las que el lr se divide por 2. Sin la bandera, cada "
                         "25 000 como en el paper; sola, ninguno")
+    p.add_argument("--meseta", type=int, default=0,
+                   help="N > 0: si el NRMSE QSM del ADMM no baja del mejor visto en N "
+                        "evaluaciones QSM seguidas, lr/2 desde la iteración siguiente; agotadas "
+                        "--meseta-mitades, la meseta siguiente corta la corrida. 0 lo apaga")
+    p.add_argument("--meseta-mitades", type=int, default=MESETA_MITADES,
+                   help="cuántas veces puede partir el lr --meseta antes de cortar")
+    p.add_argument("--sobreajuste", action="store_true",
+                   help="prueba de sobreajuste: cada iteración ve el mismo lote (los primeros "
+                        "--lote parches, de los primeros --lote volúmenes de --train-list) con el "
+                        "mismo ruido, sin disyuntor; la validación agrega el PSNR de ese lote")
     # Candidatas de la fase 2, apagadas: con los defaults la corrida es la receta.
     p.add_argument("--sigma-max", type=float, default=0.0,
                    help="> 0 sortea sigma ~ U(--sigma-min, --sigma-max) por parche (ruido ciego)")
@@ -542,7 +596,8 @@ def opciones() -> argparse.ArgumentParser:
     # Seguimiento, evaluación QSM y estabilidad: no tocan la aritmética, y están en LIBRES.
     p.add_argument("--seguimiento", choices=seguimiento.MODOS, default="auto",
                    help="W&B. `auto`: online si hay credencial (`wandb login` o WANDB_API_KEY) y "
-                        "offline si no; `no` ni importa wandb")
+                        "offline si no; `online` sale con error antes de entrenar si W&B no "
+                        "abre; `no` ni importa wandb")
     p.add_argument("--wandb-proyecto", default=seguimiento.PROYECTO)
     p.add_argument("--qsm-datos", default=QSM_DATOS,
                    help="carpeta con params.mat y chi_cosmos.mat (los de ../tdv/data_mat). Si "
@@ -566,9 +621,24 @@ def opciones() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> None:
     p = opciones()
     args = p.parse_args(argv)
+    # Con el mismo lote, un rechazo deja la iteración siguiente igual y se repite para siempre, y
+    # el rebobinado vuelve al mismo estallido (SOBREAJUSTE): el sobreajuste va sin disyuntor.
+    if args.sobreajuste:
+        args.guard = args.guard_abs = math.inf
     if args.guard_abs is None:
         args.guard_abs = cota_absoluta(args.patch)
     mide_amp = math.isfinite(args.guard_amp)
+    if args.lote < 1:
+        p.error(f"--lote {args.lote}: tiene que ser al menos 1")
+    if args.meseta < 0 or args.meseta_mitades < 0:
+        p.error("--meseta y --meseta-mitades no pueden ser negativos")
+    # Antes de cargar los datos: lo que haría fallar la corrida tiene que fallar al arrancar.
+    if args.meseta and not (args.qsm_datos and all((Path(args.qsm_datos) / a).is_file()
+                                                   for a in QSM_ARCHIVOS)):
+        p.error(f"--meseta {args.meseta} decide con el NRMSE QSM, y la evaluación QSM no tiene "
+                f"datos: faltan {' o '.join(QSM_ARCHIVOS)} en --qsm-datos {args.qsm_datos!r}")
+    if args.seguimiento == "online" and (falta := seguimiento.falta_para_online()):
+        p.error(f"--seguimiento online: {falta}. Con --seguimiento auto la corrida sigue offline")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if args.sonda_vram and device.type != "cuda":
         p.error("--sonda-vram mide el pico de memoria de una GPU y torch no ve ninguna "
@@ -590,14 +660,18 @@ def main(argv: list[str] | None = None) -> None:
                                               args.checkpointing, presupuesto, mide_amp)
         except ValueError as e:
             p.error(f"--micro-lote auto: {e}")
-    elif args.lote % args.micro_lote:
-        p.error(f"--lote {args.lote} no es múltiplo de --micro-lote {args.micro_lote}")
-    acumulacion = args.lote // args.micro_lote
+    elif args.micro_lote > args.lote:
+        p.error(f"--micro-lote {args.micro_lote} es mayor que --lote {args.lote}")
+    # El efectivo es el mayor trozo, que es lo que ocupa memoria: 12 con 32 queda en 11.
+    tamanos = particion(args.lote, args.micro_lote)
+    args.micro_lote, acumulacion = tamanos[0], len(tamanos)
     predicha = vram_predicha(args.micro_lote, args.patch, args.mode, args.checkpointing, mide_amp)
     print("dispositivo: " + (f"{torch.cuda.get_device_name(device)}, {total:.2f} GiB"
                              if total is not None else "cpu, sin memoria que medir")
           + f" | presupuesto {presupuesto:.2f} GiB, {presupuesto * (1 - MARGEN):.2f} útiles"
-          + f" | micro-lote {args.micro_lote}" + (" (auto)" if pedido == "auto" else "")
+          + f" | micro-lote {args.micro_lote}" + (" (auto)" if pedido == "auto" else
+                                                   f" (pedido {pedido})"
+                                                   if pedido != args.micro_lote else "")
           + f", pico predicho {predicha:.2f} GiB", flush=True)
     hitos = args.hitos if args.hitos is not None else list(
         range(LR_HALVE_EVERY, args.iterations + 1, LR_HALVE_EVERY))
@@ -614,7 +688,7 @@ def main(argv: list[str] | None = None) -> None:
         estado = torch.load(args.reanudar, weights_only=False,
                             map_location=None if torch.cuda.is_available() else "cpu")
         rama = Path(args.reanudar).resolve().parent != out.resolve()
-        libres = LIBRES | ({"hitos"} if rama else set())
+        libres = LIBRES | (CALENDARIO if rama else set())
         ahora = vars(args)
         # Una bandera de receta posterior al estado vale ahí su default: los de runs/humo3d no
         # tienen `mascara_cerebro`, y sin esto no se podían reanudar.
@@ -623,7 +697,8 @@ def main(argv: list[str] | None = None) -> None:
                            and estado["args"].get(k, p.get_default(k)) != ahora.get(k))
         if distintas:
             p.error(f"--reanudar: cambian {distintas}; "
-                    + ("una rama sólo puede cambiar --hitos" if rama else
+                    + ("una rama sólo puede cambiar el calendario: --hitos, --meseta y "
+                       "--meseta-mitades" if rama else
                        "seguir en el mismo --out no puede cambiar la receta (otro --micro-lote "
                        "sí, con un AVISO)"))
         it0 = estado["iteration"]
@@ -660,7 +735,14 @@ def main(argv: list[str] | None = None) -> None:
         model.load_state_dict(estado["model"])
     # El método, no el módulo, como en `train.py`: el state_dict queda sin prefijo `_orig_mod.`.
     if not args.sin_compilar:
+        # Sin GPU, compilado y en CPU tardaría semanas: casi siempre es un driver que falta.
+        if device.type != "cuda":
+            p.error("torch no ve ninguna GPU (torch.cuda.is_available() es False): revisar el "
+                    "driver con nvidia-smi (CUDA 13 pide 580 o más). En CPU, sólo para probar, "
+                    "--sin-compilar")
         model.R.grad = torch.compile(model.R.grad, dynamic=False)
+        # Trozos desiguales son dos formas más en la caché de dynamo (MICRO-LOTES).
+        torch._dynamo.config.recompile_limit = max(torch._dynamo.config.recompile_limit, 16)
     # Antes de los datos: la sonda no los usa, y en `--out` no escribe más que su json.
     if args.sonda_vram:
         sonda_vram(model, args, mode, presupuesto, out)
@@ -671,6 +753,9 @@ def main(argv: list[str] | None = None) -> None:
     # parche `it0 * lote`, y el DataLoader no guarda nada.
     archivos = [Path(args.data_root) / "images" / TRAIN_SPLIT / f"{Path(n).stem}.npy"
                 for n in lee_lista(args.train_list)]
+    # La prueba de sobreajuste ve un solo lote: con los primeros --lote volúmenes alcanza.
+    if args.sobreajuste:
+        archivos = archivos[:args.lote]
     mascaras = None
     if args.mascara_cerebro:
         rutas = [Path(args.data_root) / "mascaras" / TRAIN_SPLIT / f.name for f in archivos]
@@ -689,19 +774,28 @@ def main(argv: list[str] | None = None) -> None:
         # con las esquinas válidas.
         mascaras = (np.load(r) for r in rutas)
     train_set = PatchDataset3D(
-        archivos, patch_size=args.patch, length=(args.iterations - it0) * args.lote,
-        seed=args.seed * 100, offset=it0 * args.lote, signo=args.aug_signo,
-        ganancia=args.aug_ganancia, mascaras=mascaras,
+        archivos, patch_size=args.patch,
+        length=args.lote if args.sobreajuste else (args.iterations - it0) * args.lote,
+        seed=args.seed * 100, offset=0 if args.sobreajuste else it0 * args.lote,
+        signo=args.aug_signo, ganancia=args.aug_ganancia, mascaras=mascaras,
     )
     if mascaras is not None:
         esquinas = [e.size for e in train_set.esquinas]
         print(f"máscara de cerebro: {len(train_set.con_esquinas)} de {len(esquinas)} volúmenes "
               f"con cubos de {args.patch}^3 a {train_set.margen_cerebro} vóxel o más del "
               f"borde; mediana {np.median(esquinas):.0f} esquinas por volumen", flush=True)
-    persistentes = {"persistent_workers": True, "prefetch_factor": 4} if args.workers else {}
-    loader = DataLoader(train_set, batch_size=args.micro_lote, shuffle=False, drop_last=True,
-                        num_workers=args.workers, pin_memory=(device.type == "cuda"),
-                        **persistentes)
+    # Un lote entero por pedido; los micro-lotes se cortan en el bucle, con los tamaños de
+    # `tamanos`. El sobreajuste no tiene loader: su lote se arma una vez.
+    loader = fijo = None
+    if args.sobreajuste:
+        fijo = torch.stack([train_set[i] for i in range(args.lote)])
+    else:
+        # Dos lotes enteros por worker: los 2 x 2 x 32 parches en vuelo de antes (4 x 2 x 16).
+        persistentes = ({"persistent_workers": True, "prefetch_factor": 2} if args.workers
+                        else {})
+        loader = DataLoader(train_set, batch_size=args.lote, shuffle=False, drop_last=True,
+                            num_workers=args.workers, pin_memory=(device.type == "cuda"),
+                            **persistentes)
     # Con las máscaras de cerebro de todos los de evaluación, la validación mide también ahí: lo
     # que ve el entrenamiento con --mascara-cerebro. Sin alguna, no, y el log lo dice.
     mascaras_eval = Path(args.data_root) / "mascaras" / EVAL_SPLIT
@@ -714,6 +808,9 @@ def main(argv: list[str] | None = None) -> None:
     # --- EVALUACIÓN QSM ----------------------------------------------------------------------
     # Una sola vez, en CPU: `admm_wtdv` lo pasa al device en cada evaluación.
     cosmos = carga_qsm(args.qsm_datos)
+    if args.meseta and cosmos is None:
+        p.error(f"--meseta {args.meseta}: COSMOS no se pudo cargar de {args.qsm_datos} (el "
+                "AVISO de arriba), y sin evaluación QSM no hay NRMSE con qué decidir")
 
     # --- ESTABILIDAD -------------------------------------------------------------------------
     # Los dos puntos, una sola vez: no dependen del modelo. Un lado que no entra se recorta.
@@ -739,6 +836,7 @@ def main(argv: list[str] | None = None) -> None:
     escala, rechazos, seguidos, max_seguidos = [], 0, 0, 0
     respaldo, it_respaldo, rebobinados, limpias = None, 0, 0, 0
     descartadas, it_rebobinado, qsm_hist, mejor_qsm = 0, 0, [], None
+    meseta, corte = meseta_nueva(), None
     traza = np.zeros((args.iterations, COLUMNAS), dtype=np.float64)
     # loss T dT lambda dlambda |g| centro amp rechazado rebobinado |g|micro lr efectiva sigma
     if estado is not None:
@@ -754,6 +852,7 @@ def main(argv: list[str] | None = None) -> None:
         traza[:it0] = estado["traza"]
         qsm_hist = estado.get("qsm", [])          # un estado anterior a la evaluación QSM
         mejor_qsm = estado.get("mejor_qsm")       # o a `best_qsm.pth`
+        meseta = estado.get("meseta") or meseta_nueva()   # o a --meseta
 
     # --- DIRECTORIO DE SALIDA ----------------------------------------------------------------
     # Lo que `--out` tenga de antes y no esté en el estado es de una corrida o de un linaje que no
@@ -773,10 +872,13 @@ def main(argv: list[str] | None = None) -> None:
             guarda_pth(vigente, out / nombre)
     ruido = (f"sigma~U({args.sigma_min:g}, {args.sigma_max:g})" if args.sigma_max > 0
              else f"sigma={args.sigma:g}")
+    trozos = (f"{acumulacion}x{args.micro_lote}" if len(set(tamanos)) == 1
+              else "+".join(map(str, tamanos)))
     print(f"parámetros: {sum(p.numel() for p in model.parameters()):,} | "
-          f"lote {args.lote} = {acumulacion}x{args.micro_lote} de {args.patch}^3 | "
+          f"lote {args.lote} = {trozos} de {args.patch}^3 | "
           f"modo {args.mode} | datos {args.data_root} ({len(train_set.volumes)} vols, "
-          f"{len(eval_set)} de eval a {args.eval_recorte}^3) | hitos lr {hitos} | "
+          f"{len(eval_set)} de eval a {args.eval_recorte}^3) | hitos lr {hitos}"
+          + (f" y de meseta {meseta['hitos']}" if meseta["hitos"] else "") + " | "
           f"T_init={args.t_init:g} | lambda_init={LAMBDA_INIT:g} | {ruido} | "
           f"signo={args.aug_signo} | ganancia={args.aug_ganancia:g} | "
           f"mascara_cerebro={args.mascara_cerebro} | clip={args.clip:g} | "
@@ -805,8 +907,17 @@ def main(argv: list[str] | None = None) -> None:
         f"{UMBRAL_ESTABILIDAD:g}" if sin_best_qsm is None else f"no se busca ({sin_best_qsm})")
           + (f" | hereda el del estado, de la {mejor_qsm['iteration']}" if mejor_qsm else ""),
           flush=True)
+    if args.meseta:
+        print(f"meseta: lr/2 si el NRMSE QSM no baja del mejor en {args.meseta} evaluaciones QSM "
+              f"seguidas, hasta {args.meseta_mitades} veces; la meseta siguiente corta"
+              + (f" | hereda {len(meseta['hitos'])} mitades y el mejor, {meseta['mejor']:.2f} % "
+                 f"de la {meseta['it_mejor']}" if meseta["mejor"] is not None else ""), flush=True)
+    if args.sobreajuste:
+        print(f"sobreajuste: el mismo lote de {args.lote} parches, de {len(train_set.volumes)} "
+              "volúmenes, con el mismo ruido en cada iteración, y sin disyuntor: un rechazo se "
+              "repetiría igual en cada iteración", flush=True)
 
-    lotes = iter(loader)
+    lotes = iter(loader) if loader is not None else None
 
     # --- SEGUIMIENTO -------------------------------------------------------------------------
     # Después de `iter(loader)`: los workers ya existen, y no se forkea con los hilos de wandb
@@ -816,6 +927,10 @@ def main(argv: list[str] | None = None) -> None:
                            padre=args.reanudar, desde=it0)
     if args.seguimiento == "no":
         print("seguimiento: sin W&B (--seguimiento no)", flush=True)
+    elif args.seguimiento == "online" and run is None:
+        # Antes de la primera iteración: con el supervisor mirando W&B, mejor no arrancar a ciegas.
+        p.error("--seguimiento online: W&B no abrió (el motivo, en la línea «seguimiento:» de "
+                "arriba). Con --seguimiento auto la corrida sigue offline")
 
     # Después de `iter(loader)`, que sortea una semilla del generador global: la corrida de origen
     # lo hizo una sola vez, al arrancar.
@@ -834,13 +949,19 @@ def main(argv: list[str] | None = None) -> None:
         # El lr sale del calendario en CADA iteración: así una rama reanuda con otro calendario, y
         # ningún estado restaurado puede traer un lr viejo.
         for grupo in opt.param_groups:
-            grupo["lr"] = lr_en(it, hitos)
+            grupo["lr"] = lr_en(it, hitos + meseta["hitos"])
+        # El sobreajuste repite también el ruido: el generador vuelve a su semilla.
+        if args.sobreajuste:
+            noise_gen.manual_seed(args.seed * 100 + 1)
         opt.zero_grad(set_to_none=True)
         perdida = torch.zeros((), device=device)
         p0, pS = torch.zeros((), device=device), torch.zeros((), device=device)
         suma_sigma = 0.0
-        for micro in range(acumulacion):
-            lote = next(lotes)
+        entero = fijo if args.sobreajuste else next(lotes)
+        for micro, lote in enumerate(torch.split(entero, tamanos)):
+            # Cuántas veces cabe el trozo en el lote: su peso en la media. Con trozos iguales es
+            # `acumulacion`, entero y exacto, y la aritmética es la de siempre.
+            parte = args.lote / len(lote)
             if args.sigma_max > 0:
                 noisy, sigmas = add_noise_ciego(lote, args.sigma_min, args.sigma_max, noise_gen,
                                                 NOISE_SCALE)
@@ -857,17 +978,17 @@ def main(argv: list[str] | None = None) -> None:
                 states = model(noisy, noisy)
                 loss = (states[-1].float() - clean.float()).pow(2).flatten(1).sum(1).mean()
 
-            (loss / acumulacion).backward()
-            perdida += loss.detach() / acumulacion
+            (loss / parte).backward()
+            perdida += loss.detach() / parte
             # Sólo LEE `.grad`: el backward siguiente acumula sobre el mismo tensor y da los
-            # mismos bits. Por `acumulacion`, es la norma de este micro-lote como si fuera el lote.
+            # mismos bits. Por `parte`, es la norma de este micro-lote como si fuera el lote.
             if micro == 0:
-                g_micro = acumulacion * get_total_norm(
+                g_micro = parte * get_total_norm(
                     [q.grad for q in model.parameters() if q.grad is not None]).item()
             if mide_amp:
                 p0 += noisy.grad.norm() / acumulacion
                 pS += 2 * (states[-1].detach().float() - clean.float()).norm() / (
-                    args.micro_lote * acumulacion ** 2)
+                    args.lote * acumulacion)
 
         # Devuelve la norma ANTES de recortar, que es la que sirve de diagnóstico.
         gnorm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip).item()
@@ -945,6 +1066,11 @@ def main(argv: list[str] | None = None) -> None:
                        "T": model.T.item(), "lambda": model.lmbda.item()}
             if con_cerebro:
                 entrada["psnr_cerebro"] = report["psnr_denoised_cerebro"]
+            if args.sobreajuste:
+                # La pérdida suma C·P^3 valores por parche: dividida, es el MSE del lote fijo.
+                mse = perdida.item() / (CHANNELS * args.patch ** 3)
+                entrada["psnr_lote"] = (10 * math.log10(DATA_RANGE ** 2 / mse) if mse > 0
+                                        else math.inf)
             history.append(entrada)
             (out / "history.json").write_text(json.dumps(history, indent=2))
 
@@ -962,6 +1088,7 @@ def main(argv: list[str] | None = None) -> None:
                   + (f", en cerebro {entrada['psnr_cerebro']:.3f} dB" if con_cerebro else "")
                   + f" | NRMSE {entrada['nrmse_pct']:.2f} %, en tejido "
                   f"{entrada['nrmse_pct_tejido']:.2f} % ({report['num_volumenes']} vols)"
+                  + (f" | lote fijo {entrada['psnr_lote']:.3f} dB" if args.sobreajuste else "")
                   + ("  *mejor*" if dB == best_psnr else ""), flush=True)
             seguimiento.registra(run, {f"val/{k}": v for k, v in entrada.items()
                                        if k not in ("iteration", "efectiva", "T", "lambda")}, it)
@@ -1027,11 +1154,30 @@ def main(argv: list[str] | None = None) -> None:
                                                        cosmos["mascara_eval"]), it,
                                     "COSMOS: GT | reconstrucción | error, en la máscara, "
                                     "±0.1 ppm")
+                    # La meseta mira toda evaluación QSM sin fallo, estable o no.
+                    if args.meseta and it < args.iterations:
+                        accion = paso_meseta(meseta, r["nrmse_final_pct"], it, args.meseta,
+                                             args.meseta_mitades)
+                        visto = ("ningún NRMSE finito" if meseta["mejor"] is None else
+                                 f"{meseta['mejor']:.2f} % (la {meseta['it_mejor']})")
+                        if accion == "mitad":
+                            print(f"    meseta: {args.meseta} evaluaciones QSM sin bajar de "
+                                  f"{visto}: lr/2 desde la {it + 1}, mitad "
+                                  f"{len(meseta['hitos'])} de {args.meseta_mitades}", flush=True)
+                        elif accion == "corte":
+                            corte = it
+                            print(f"    meseta: {args.meseta} evaluaciones QSM sin bajar de "
+                                  f"{visto} tras {args.meseta_mitades} mitades del lr: la "
+                                  f"corrida se corta en la {it}", flush=True)
+                        seguimiento.registra(run, {"meseta/mitades": len(meseta["hitos"]),
+                                                   "meseta/sin_mejora": meseta["sin_mejora"]}
+                                             | ({} if meseta["mejor"] is None else
+                                                {"meseta/mejor_nrmse_pct": meseta["mejor"]}), it)
             reloj = (time.time(), it)
 
         # Después de la evaluación, para que el estado lleve su entrada de `history`. Siempre en la
         # última: una corrida terminada se puede extender sin rehacer nada.
-        if args.guardar_cada and (it % args.guardar_cada == 0 or it == args.iterations):
+        if args.guardar_cada and (it % args.guardar_cada == 0 or it == args.iterations or corte):
             guarda_traza(out / "traza.npy", traza[:it])
             guarda_pth({
                 "iteration": it, "config": config, "args": vars(args),
@@ -1041,18 +1187,27 @@ def main(argv: list[str] | None = None) -> None:
                 "rebobinados": rebobinados, "limpias": limpias, "descartadas": descartadas,
                 "it_rebobinado": it_rebobinado, "history": history, "best_psnr": best_psnr,
                 "mejor": mejor, "traza": traza[:it].copy(), "qsm": qsm_hist,
-                "mejor_qsm": mejor_qsm, "max_grad": max_grad, "noise_gen": noise_gen.get_state(),
+                "mejor_qsm": mejor_qsm, "meseta": meseta, "max_grad": max_grad,
+                "noise_gen": noise_gen.get_state(),
                 "rng_cpu": torch.get_rng_state(),
                 "rng_cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else [],
                 "horas": horas_previas + (time.time() - t0) / 3600,
             }, out / f"estado-{it:06d}.pth")
             reloj = (time.time(), it)
 
+        # El único corte del bucle, y queda escrito: `estado.json` lleva `corte` y las hechas.
+        if corte:
+            break
+
+    hechas = corte or args.iterations
     peak = torch.cuda.max_memory_allocated() / 2**30 if device.type == "cuda" else 0.0
     horas = horas_previas + (time.time() - t0) / 3600
     final = {
         "terminada": True, "iteraciones_pedidas": args.iterations,
-        "iteraciones_hechas": args.iterations, "iteracion_efectiva": args.iterations - descartadas,
+        "iteraciones_hechas": hechas, "iteracion_efectiva": hechas - descartadas,
+        "corte": corte and {"motivo": "meseta del NRMSE QSM", "iteracion": corte,
+                            "mitades": len(meseta["hitos"])},
+        "meseta": meseta if args.meseta or meseta["hitos"] else None,
         "mejor_psnr": best_psnr, "psnr_final": history[-1]["psnr"] if history else None,
         "rechazos": rechazos, "max_seguidos": max_seguidos, "rebobinados": rebobinados,
         "reanudada_de": args.reanudar, "horas": round(horas, 3),
@@ -1062,9 +1217,11 @@ def main(argv: list[str] | None = None) -> None:
                                                              "estabilidad")}}
     (out / "estado.json").write_text(json.dumps(final, indent=2))
     print(f"\nmejor PSNR: {best_psnr:.3f} dB | {horas:.2f} h | VRAM pico {peak:.2f} GiB "
-          f"(predicho {predicha:.2f}) | lotes rechazados {rechazos} de {args.iterations} "
+          f"(predicho {predicha:.2f}) | lotes rechazados {rechazos} de {hechas} "
           f"(máx. seguidos {max_seguidos}) | rebobinados {rebobinados} | "
-          f"iteración efectiva {args.iterations - descartadas}"
+          f"iteración efectiva {hechas - descartadas}"
+          + (f" | cortada por meseta en la {corte}, tras {len(meseta['hitos'])} mitades del lr"
+             if corte else "")
           + (f" | QSM: mejor NRMSE {final['qsm_nrmse_mejor_pct']:.2f} % en la "
              f"{final['qsm_iteracion_mejor']}, {final['qsm_fallos']} fallos"
              if final["qsm_nrmse_mejor_pct"] is not None else ""), flush=True)
@@ -1081,16 +1238,19 @@ if __name__ == "__main__":
 # El de `train.py`, paso por paso, con cuatro diferencias:
 #   1. Parches de PATCH_SIZE^3 de `ddr.data3d.PatchDataset3D`, con al menos 35 % de tejido (o,
 #      con --mascara-cerebro, enteros dentro del cerebro) y una de las 48 simetrías del cubo, en
-#      `--lote / --micro-lote` micro-lotes; el micro-lote lo elige la memoria (MEMORIA).
-#   2. El lr no lo lleva un scheduler: `lr_en(it, hitos)` lo fija al principio de cada iteración.
+#      ceil(--lote / --micro-lote) micro-lotes casi iguales; el micro-lote lo elige la memoria
+#      (MEMORIA y MICRO-LOTES).
+#   2. El lr no lo lleva un scheduler: `lr_en(it, hitos)` lo fija al principio de cada iteración,
+#      con los hitos de --meseta sumados (MESETA).
 #   3. La cota absoluta del disyuntor escala con el parche (`cota_absoluta`).
 #   4. `--guardar-cada` escribe el estado completo, y `--reanudar` sigue desde ahí bit a bit (con
 #      el mismo micro-lote).
 # Y tres agregados que no tocan la aritmética (test): el seguimiento en W&B (SEGUIMIENTO), la
 # evaluación QSM en las validaciones (EVALUACIÓN QSM) y el número de estabilidad (ESTABILIDAD).
-# Como en `train.py`, el bucle no corta nunca: ni por NaN, ni por rechazos, ni por early stopping,
-# ni por un fallo de W&B, de la evaluación QSM o de la estabilidad. Una corrida terminó si su
-# `estado.json` dice `"terminada": true`.
+# Como en `train.py`, el bucle no corta ni por NaN, ni por rechazos, ni por un fallo de W&B, de la
+# evaluación QSM o de la estabilidad. El único corte es el de --meseta, apagada por defecto, y
+# queda escrito en `estado.json` (MESETA). Una corrida terminó si su `estado.json` dice
+# `"terminada": true`. --sobreajuste cambia los datos para la prueba de sobreajuste (SOBREAJUSTE).
 
 ---------------------------------------------------------------------------------------------------
 
@@ -1107,12 +1267,12 @@ if __name__ == "__main__":
 #                       del paper». El de antes era 8 (885 k, del orden de BSDS en valores). El
 #                       cambio no está medido: lo mide el piloto, y las columnas 5 y 10 de la traza
 #                       dicen si 32 queda por encima de la escala de ruido del gradiente, donde
-#                       cada parche de más compra menos. 32 se parte en 16, 8, 4, 2 o 1.
-#   MICRO_LOTE = auto   el mayor divisor de LOTE que entra en --vram-gb (MEMORIA): 16 en 96 GiB, 8
-#                       en 48, 2 en la 5070 Ti. Con acumulación el gradiente es el mismo para cualquier
-#                       partición, porque ninguna capa acopla muestras: el micro-lote es hardware,
-#                       no receta. En `referencia` 48^3 x 2 no entró en 16 GB: los tests y las
-#                       corridas exactas usan --micro-lote 1.
+#                       cada parche de más compra menos. 32 se parte en trozos casi iguales.
+#   MICRO_LOTE = auto   el que parte LOTE en menos trozos y entra en --vram-gb (MICRO-LOTES): 16
+#                       en 96 GiB, 11 en 48, 3 en la 5070 Ti. Con acumulación el gradiente es el
+#                       mismo para cualquier partición, porque ninguna capa acopla muestras: el
+#                       micro-lote es hardware, no receta. En `referencia` 48^3 x 2 no entró en
+#                       16 GB: los tests y las corridas exactas usan --micro-lote 1.
 #   ITERACIONES_TANDA   40 000, el tronco del piloto. El costo se lee en s/it, no en horas: en la
 #                       5070 Ti, con el micro-lote 2 de `auto`, la sonda del 2026-10-13 dio
 #                       0.280–0.291 s por parche (8.96–9.30 s/it; docs/bitacora.md, pre-registro
@@ -1166,16 +1326,18 @@ if __name__ == "__main__":
 # `auto` da 16: 57.1 GiB predichos, extrapolados de la 5070 Ti; 32 pediría 113.5. Si 16 es más
 # rápido por parche que 8 no está medido: lo dice la sonda en esa tarjeta, y si no lo es,
 # `--micro-lote 8` (28.8 GiB) rinde igual.
-# Con 48 GiB a 48^3 en `rapido` entrarían 12 (42.9 de 43.2 útiles) y `auto` da 8, el mayor
-# divisor de 32: 28.8 GiB predichos, ~60 % de la tarjeta. Está bien: lo que cuenta es saturar el
-# cómputo, no llenar la memoria, y en la 5070 Ti de 48^3 x 2 a x 4 el costo por vóxel ya bajaba
-# sólo 6 % (2.39 a 2.26 µs). Con --checkpointing `auto` da 32 (23.9 GiB predichos), un solo
+# Con 48 GiB a 48^3 en `rapido` entran 12 (42.9 de 43.2 útiles) y `auto` da 11: 32 = 11 + 11 +
+# 10, las tres pasadas de 12 con 39.4 GiB predichos. Hasta el 2026-10-16 `auto` exigía un divisor
+# de 32 y daba 8: 28.8 GiB y cuatro pasadas (MICRO-LOTES). Lo que cuenta es saturar el cómputo, no
+# llenar la memoria: en la 5070 Ti de 48^3 x 2 a x 4 el costo por vóxel ya bajaba sólo 6 % (2.39 a
+# 2.26 µs). Con --checkpointing `auto` da 32 (23.9 GiB predichos), un solo
 # micro-lote: la columna 10 de la traza es entonces la 5 y no estima nada; para conservarla,
 # --micro-lote 16.
 # Todo esto se ajustó en 16 GB y se extrapola a 48: es derivado, no medido en la tarjeta de
-# destino. `--sonda-vram` lo mide: SONDA_ITERACIONES = 4 de forward + backward con cada divisor
-# de --lote, de menor a mayor y compilado como para entrenar, hasta el primero cuyo pico pasa de
-# los útiles o da OOM; imprime predicho contra medido y lo deja en `sonda-vram.json`. Si el medido
+# destino. `--sonda-vram` lo mide: SONDA_ITERACIONES = 4 de forward + backward con cada tamaño de
+# `tamanos_utiles(--lote)`, de menor a mayor y compilado como para entrenar, hasta el primero
+# cuyo pico pasa de los útiles o da OOM; imprime predicho contra medido y lo deja en
+# `sonda-vram.json`. Si el medido
 # admite más que `auto`, se pasa --micro-lote explícito. Imprime además los segundos por parche
 # de las tres últimas, entre dos `torch.cuda.synchronize` (la primera compila `R.grad` para esa
 # forma, porque va con `dynamic=False`, y deja a cuDNN elegir algoritmos: no se cronometra), y
@@ -1206,7 +1368,75 @@ if __name__ == "__main__":
 # pueden traer un lr viejo, y una rama puede reanudar con otro calendario. `tests/test_train3d.py`
 # lo compara con `MultiStepLR` iteración por iteración.
 # `--hitos` acepta cualquier lista: sin la bandera son los múltiplos de 25 000 hasta
-# `--iterations`, como en el paper; sola, ninguno, que es el tronco a lr constante.
+# `--iterations`, como en el paper; sola, ninguno, que es el tronco a lr constante. Con --meseta,
+# `lr_en` recibe además los hitos que puso la meseta, que viajan en el estado (MESETA).
+
+---------------------------------------------------------------------------------------------------
+
+# --- MICRO-LOTES -----------------------------------------------------------------------------
+# Desde el 2026-10-16 el micro-lote es cualquier entero hasta --lote, no un divisor: el lote se
+# parte en ceil(lote / m) trozos que difieren a lo sumo en uno, los mayores primero (`particion`:
+# 32 con 12 da 11 + 11 + 10). Lo planteó el autor: con divisores, en 96 GB sólo se podían ocupar
+# 28.8 o 57.1 GiB. Lo que cuesta tiempo son las pasadas por iteración, no la memoria ocupada: un
+# trozo más grande que no quita una pasada sólo pide más memoria. Por eso `auto` toma el mayor de
+# `tamanos_utiles` que entra, que deja menos pasadas con el menor pico (11 y no 12 en 48 GiB), y el
+# micro-lote que guardan `config.json` y el estado es el mayor trozo: --micro-lote 12 queda en 11.
+# En la tarjeta de destino no cambia nada: entran 24, y dos pasadas son 16 + 16. En 48 GiB son tres
+# pasadas en vez de cuatro, y en la 5070 Ti once (diez de 3 y una de 2) en vez de dieciséis.
+# La aritmética: cada trozo entra a la media del lote con su peso, `loss / (lote / n)`, y la
+# columna 10 escala por el mismo `lote / n`. Con trozos iguales ese cociente es `acumulacion`,
+# entero y exacto, y la corrida es bit a bit la de antes. Medido el 2026-10-16 en `referencia` y
+# CPU, con seis configuraciones de 6 iteraciones (micro-lotes de 2 y de 1, con workers, ruido
+# ciego, --guard-amp y `auto`): `traza.npy`, `history.json` y estado idénticos a los de `ff4aa3c`.
+# Con trozos desiguales el gradiente es el del lote en aritmética exacta y cambia el orden de suma
+# (test). El DataLoader entrega el lote entero y el bucle lo corta con `torch.split`: los mismos
+# parches en el mismo orden, y el ruido se sigue sorteando trozo por trozo, así que con --sigma
+# fijo y P^3 múltiplo de 16 es el mismo para cualquier partición (REANUDACIÓN).
+# Cada forma de trozo compila `R.grad` aparte (`dynamic=False`, dos entradas por forma), y con
+# trozos desiguales hay dos formas: `main` sube el límite de recompilación de dynamo de 8 a 16,
+# para que ninguna forma de la evaluación caiga en eager.
+
+---------------------------------------------------------------------------------------------------
+
+# --- SOBREAJUSTE -----------------------------------------------------------------------------
+# --sobreajuste es la prueba de que la tubería puede aprender: cada iteración ve el mismo lote,
+# los primeros --lote parches de los primeros --lote volúmenes de la lista (los únicos que carga),
+# con el mismo ruido, porque el generador vuelve a su semilla en cada iteración. Si la tubería
+# aprende, la pérdida de ese lote baja mucho más que la de validación: la red lo memoriza. La
+# validación agrega `psnr_lote`, el PSNR de ese lote leído de la pérdida de la iteración (antes de
+# su paso), al lado del PSNR de validación.
+# Va sin disyuntor. Con el mismo lote, un rechazo deja la iteración siguiente idéntica (sin paso de
+# Adam no cambia nada) y se repite para siempre, y el rebobinado vuelve al mismo estallido: en
+# `runs/sobreajuste-3d` (2026-10-16, semilla 1, lote 4 de 48^3) el estallido de la 8 (‖g‖ 360 706
+# contra una mediana de 2 314) volvió en la 37, la 66 y la 95, con los mismos ‖g‖ y pérdida en
+# todos los decimales impresos. Con datos frescos el disyuntor sí sale: después de rebobinar, los
+# parches siguen adelante. El resultado de la prueba, en docs/bitacora.md (2026-10-16).
+
+---------------------------------------------------------------------------------------------------
+
+# --- MESETA ----------------------------------------------------------------------------------
+# --meseta N se pidió el 2026-10-16: mirar el checkpoint en el ADMM y, si su
+# NRMSE deja de bajar, partir el lr o cortar. La regla es `paso_meseta`. Cada evaluación QSM sin
+# fallo compara su NRMSE final con el mejor visto: si lo mejora, la cuenta vuelve a cero; si no,
+# suma uno, y a las N seguidas el lr se divide por 2 desde la iteración siguiente (esa evaluación
+# pasa a ser un hito de `lr_en`) y la cuenta vuelve a cero sin olvidar el mejor. Agotadas
+# --meseta-mitades (5), la meseta siguiente corta: se guarda el estado, `estado.json` dice
+# `"terminada": true` con `corte` (motivo, iteración y mitades) y las iteraciones hechas, y el
+# bucle sale por el único `break` que tiene (test).
+#   - El NRMSE es el final del ADMM, el que elige `best_qsm.pth`, de toda evaluación sin fallo,
+#     estable o no: la regla mira si el prior mejora como prior, y la estabilidad la sigue mirando
+#     `best_qsm.pth`. Un NRMSE que no es finito no mejora.
+#   - Sin umbral de mejora: cualquier baja reinicia la cuenta. Con ADMMs que no cortan el NRMSE
+#     final salta mucho (144.0 → 102.5 % y 37.8 → 69.7 % en `ventana-3d-12h`), así que con N = 1
+#     una sola evaluación peor parte el lr, y con N = 2 hacen falta dos seguidas. N = 1 es el
+#     «inmediatamente» del pedido.
+#   - En la última iteración no decide: ya no queda corrida que cambiar.
+#   - Su estado (los hitos, la cuenta, el mejor y su iteración) viaja en `estado-<it>.pth`:
+#     reanudar sigue la misma regla, y una rama puede cambiar --meseta y --meseta-mitades como
+#     cambia --hitos, heredando las mitades del tronco.
+#   - Cortar va contra la regla de `train.py`, que no corta nunca porque los análisis de
+#     supervivencia cuentan filas de la traza. Por eso viene apagada y el corte queda escrito: una
+#     corrida cortada es censurada por diseño en `corte.iteracion`, ni viva ni muerta.
 
 ---------------------------------------------------------------------------------------------------
 
@@ -1486,9 +1716,12 @@ if __name__ == "__main__":
 # bloque final de `ddr/qsm3d.py`). Viene de la 2D: el 2026-10-12 explicó por qué los checkpoints
 # 2D propios rinden peor que el oficial como prior del ADMM de QSM y no convergen. Medido a la
 # amplitud de entrenamiento (σ = 25) los cuatro dan 1.38–2.01 y el PSNR no los distingue; a la de
-# uso (la estimación inicial del ADMM llevada a std 0.06) el oficial da 0.99 y los propios
-# 2.8–23.2 (docs/bitacora.md, «POR QUÉ los checkpoints propios rinden peor como prior PnP
-# de QSM»). El PSNR de la validación es ciego a esto; este número no.
+# uso (la estimación inicial del ADMM llevada a std 0.06), con los dos extremos del espectro, el
+# paso del oficial expande ×1.27 (ρ de −0.28 a 1.03) y el de los propios ×1.77–23.9
+# (docs/mediciones/espectro-extremos-qsm.txt; el 0.99 que se citaba acá era la potencia sin
+# converger, y un solo extremo). El PSNR de la validación es ciego a esto; este número no. Ojo:
+# `estabilidad` devuelve el MÓDULO del dominante, y con el dominante negativo (Rayleigh < 0) el paso
+# expande aunque el módulo quede bajo UMBRAL_ESTABILIDAD.
 #   - Dónde: en dos puntos, armados una vez al arrancar. `val`, el punto de entrenamiento: el cubo
 #     central de --estabilidad-lado^3 del primer recorte de evaluación, con el ruido que le pone la
 #     validación (σ = --sigma, semilla SEMILLA_VAL, la de `evaluate_denoising3d`, que ahora se pasa

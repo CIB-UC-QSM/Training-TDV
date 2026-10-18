@@ -91,10 +91,16 @@ archivo. La configuración fijada el 2026-10-15 (entrada «Decisiones para la co
 - `--mascara-cerebro`;
 - sin `--aug-ganancia`.
 
+Decididas el 2026-10-18 (entrada de ese día): el lr lo decide el NRMSE QSM (`--hitos --meseta 2`)
+con `--iterations 100000` de techo, el éxito de referencia es un NRMSE bajo 26.57 % con el ADMM en
+~25 iteraciones, y el proyecto de W&B va público.
+
 Decisiones del autor abiertas:
-- N, con el s/it medido en esa tarjeta, para 72–96 h; el calendario es
-  `--iterations N --hitos N−15000 N−10000 N−5000` (con N = 40 000, `--hitos 25000 30000 35000`);
+- ~~N y los hitos fijos~~: reemplazados por la meseta el 2026-10-18;
 - la opción (a) de compatibilidad con QSM-TDV (`docs/mediciones/compat-qsm-tdv.txt`);
+- con qué se eligen `best.pth` (hoy, el PSNR del recorte entero, que con `--mascara-cerebro` no
+  sirve) y `best_qsm.pth` (hoy, NRMSE con el módulo del dominante bajo 2; sin exigir que el ADMM
+  converja);
 - ~~integrar `main` en la rama~~: hecho el 2026-10-15, al integrar la rama en `main` (entrada
   «Integración de `3D-Training` en `main`», al final);
 - si `wandb` queda como dependencia obligatoria de `main` o pasa a un extra opcional (misma
@@ -974,6 +980,8 @@ contra @550).
 
 | hipótesis | veredicto | evidencia |
 |---|---|---|
+| que el oficial sea **estable** en el punto QSM, con `(T/S)·λ_max` = 0.99 | ⚠️ corregida | corregida el 2026-10-17 (`espectro-extremos-qsm.txt`): era la potencia de 40 pasos sin converger (Lanczos: 1.0283) y un solo extremo. El oficial también tiene curvatura negativa ahí, ρ_min = −0.2827, y su paso expande ×1.27. Sigue en pie que su extremo positivo queda bajo 2 y el de los propios arriba (2.48–6.93) |
+| que un paso **no expansivo** —todo ρ en [−λ/S, 2 + λ/S]— sea lo que hace andar a un checkpoint | ❌ | medido el 2026-10-17 (`espectro-extremos-qsm.txt`): no lo cumple ninguno de los cinco en ningún punto. El oficial denoisea a 31.537 dB con ×1.47 por paso a σ = 25 y converge en el ADMM con ×1.27. TDV es no convexo a propósito: lo que separa es el tamaño de la expansión, no que exista |
 | que lo mínimo detectable en PSNR con una semilla por brazo sea **~0.33 dB** | ❌ | retirada el 2026-10-16 en la regla 5 de `AGENTS.md`. 0.33 es 2·0.164, el ancho de **una** corrida; la diferencia entre dos lleva √2: al 95 %, 1.96·√2·0.164 ≈ **0.45 dB** con σ conocida, ≈ 0.60 con σ estimada en las 6 semillas de `runs/tinit01` (t₅). Las entradas y las salidas crudas que dicen 0.33 quedan como están |
 | que `checkpoint_qsm_rapido` se haya reentrenado sobre QSM o a la amplitud de uso, y que su 1.14 **demuestre la receta** | ❌ **afirmación propia retirada** | retirada el 2026-10-15 en la revisión de los `.md`. Es byte a byte `runs/t1-rapido-30k/best.pth` (`cmp`): cortes 2D de T1 en [0, 1], 1 canal, σ = 25, `rapido`, 30 000 iteraciones. El número sigue medido (1.1376 en el punto de operación); la causa, no: contra `8δ` cambian a la vez dominio, canales, modo, iteraciones y calendario, y el oficial gris, entrenado en BSDS, también queda en 1.05. Notas en la entrada «POR QUÉ los checkpoints propios rinden peor…» y en el pre-registro de `ventana-3d-12h`, cuya `--aug-ganancia` se motivó con ese rótulo |
 | que **subir `target_std`** rescate a un checkpoint inestable en el ADMM de QSM | ❌ | predicción mía, registrada el 2026-10-12 **antes** de leer el barrido y **fallada**: pedía que `8δ` a `target_std = 0.25` bajara de 28.00 % y dio **31.2121 %**. El knob no mueve sólo la estabilidad: subir la amplitud mete la red en saturación y el prior se debilita (movimiento relativo 0.51 → 0.34 entre std 0.06 y 0.25). **`0.06` es el óptimo de todos los checkpoints**, no sólo del oficial — lo que de paso retira la idea de que el grid-search del solver estuviera atado a él |
@@ -7092,6 +7100,15 @@ estable mientras
 
     (T/S)·λ_max(∇²R) < 2
 
+> **CORREGIDO el 2026-10-17 por `docs/mediciones/espectro-extremos-qsm.txt`.** La potencia de 40
+> pasos mide el MÓDULO del dominante y converge desde abajo. Con Lanczos sobre los dos extremos,
+> en std 0.06: el oficial va de ρ = −0.28 a 1.03 (el 0.9942 era la potencia sin converger: 1.0283);
+> 1.1δ, de −5.76 a 2.48; 2δ, de −0.66 a 2.79; 8δ, de −23.22 a 6.93. El 5.7623 y el 23.2169 de abajo
+> son extremos **negativos**, curvatura negativa. El paso no expande sólo si todo ρ cae en
+> [−λ/S, 2 + λ/S], y eso no lo cumple ninguno, el oficial tampoco: ×1.27 por paso en std 0.06 y
+> ×1.47 a σ = 25. Sigue en pie que el extremo positivo del oficial queda bajo 2 y el de los propios
+> arriba, y el orden de la expansión por paso (23.9 > 6.74 > 1.77 > 1.27) es el de esta tabla.
+
 `scripts/diag_qsm_estabilidad.py` lo mide por iteración de potencia sobre el producto
 Hessiano-vector (diferencias centradas sobre `R.grad`, que es la adjunta exacta escrita a mano, no
 autograd), en float64:
@@ -7546,6 +7563,10 @@ credencial, W&B queda offline. Antes de lanzar en la tarjeta nueva hay que:
 
 ## 2026-10-12 — El número de estabilidad `(T/S)·λ_max(∇²R)` entra en cada validación de `train3d.py`: exacto contra la Hessiana, y con él la traza no cambia
 
+> **CORREGIDO el 2026-10-17:** el 0.99 del oficial era la potencia sin converger (1.03), y el
+> «2.8–23.2» mezcla extremos de signo distinto. Ver la nota en «POR QUÉ los checkpoints propios…» y
+> `docs/mediciones/espectro-extremos-qsm.txt`.
+
 **Procedencia:** `main`, entrada del mismo día «POR QUÉ los checkpoints propios rinden peor como
 prior PnP de QSM: el paso desenrollado se vuelve inestable 4× abajo de donde entrena». Allá se
 midió, con `scripts/diag_qsm_estabilidad.py`, que el número de estabilidad del paso explícito,
@@ -7730,6 +7751,10 @@ la aritmética (test: traza bit a bit la de la corrida sin QSM) y el estado pasa
 40 000 (derivado). Los brazos corren el commit que imprime su `plan.sh`.
 
 ### Por qué esto y no otra cosa
+
+> **CORREGIDO el 2026-10-17:** el 0.99 del oficial era la potencia sin converger (1.03), y el
+> «2.8–23.2» mezcla extremos de signo distinto. Ver la nota en «POR QUÉ los checkpoints propios…» y
+> `docs/mediciones/espectro-extremos-qsm.txt`.
 
 En `main` se midió el 2026-10-12 («POR QUÉ los checkpoints propios rinden peor como prior PnP de
 QSM») que los checkpoints 2D propios quedan 1.0–1.15 puntos peor que el oficial en el ADMM del autor
@@ -8075,3 +8100,424 @@ bitácora están ahí.
     Ese banco está en el README de `ff4aa3c`, no en `docs/mediciones/`.
 - **El «0.33 dB» sigue en `docs/presentacion/`** (`estado_100k.py`, `guion.txt`), que se usa para
   presentar. Se corrige cuando se vuelva a generar la presentación.
+
+---------------------------------------------------------------------------------------------------
+
+## 2026-10-16 — Micro-lote libre, `--meseta`, `--sobreajuste`, W&B online que falla al arrancar, y el ruido verificado
+
+Cuatro pedidos que le hicieron al autor («me solicitaron…»), más uno suyo, antes de la corrida
+larga. Código en la rama `worktree-pruebas-3d` sobre `f1ee7b8`.
+
+- **Micro-lote libre.** El planteo: «no tenía sentido sólo poder ocupar 30 o 60 GB». Con `auto`
+  pidiendo un divisor de 32, en 96 GB sólo cabían 28.8 o 57.1 GiB. Ahora `--micro-lote` es
+  cualquier entero hasta `--lote`, y el lote se parte en ceil(32/m) trozos casi iguales (12 da 11 +
+  11 + 10). Lo que cuesta tiempo son las pasadas por iteración, no la memoria. `auto` toma el
+  trozo que deja menos pasadas con el menor pico:
+  - en 96 GiB, 16: dos pasadas, lo mismo que antes;
+  - en 48 GiB, 11: tres pasadas en vez de cuatro;
+  - en la 5070 Ti, 3: once pasadas en vez de dieciséis.
+  Cada trozo entra a la media con su peso, `loss / (lote / n)`. Con trozos iguales la corrida es
+  bit a bit la de antes. Medido en `referencia` y CPU, con seis configuraciones de 6 iteraciones
+  (micro-lotes de 2 y de 1, con workers, ruido ciego, `--guard-amp` y `auto`): `traza.npy`,
+  `history.json` y estado idénticos a `ff4aa3c`, salvo la clave nueva `meseta` del estado. Con 2 +
+  1 contra 1 + 1 + 1 contra 3, la traza coincide a 1e-5 y el ruido es el mismo (test). La sonda
+  mide ahora `tamanos_utiles(--lote)`: 1–8, 11, 16 y 32 para 32.
+- **`--meseta N` y `--meseta-mitades` (5 por defecto).** Si el NRMSE QSM final no baja del mejor
+  visto en N evaluaciones seguidas, lr/2 desde la iteración siguiente. Agotadas las mitades, la
+  meseta siguiente corta la corrida, y `estado.json` lo dice: `corte` lleva motivo, iteración y
+  mitades, más las iteraciones hechas. Es el único `break` del bucle y viene apagada: sin la
+  bandera, la corrida no se corta nunca. Eso choca con la regla de no cortar de `train.py`, y por
+  eso el corte queda escrito; el porqué de cada decisión está en el bloque final de `train3d.py`
+  (MESETA). Probado con el NRMSE forzado: lr/2 en la 4 y la 5 y corte en la 6, y reanudada desde
+  la 3, bit a bit. Lo que no cambia: con ADMMs que no cortan el NRMSE final salta (144.0 → 102.5 %
+  en `v12-control`), así que N = 1 parte el lr con una sola evaluación peor.
+- **`--sobreajuste`.** La prueba de overfit: el mismo lote y el mismo ruido en cada iteración,
+  sin disyuntor, y la validación agrega `psnr_lote`. Por qué sin disyuntor, en la entrada
+  siguiente. El resultado también.
+- **`--seguimiento online` falla al arrancar.** Antes de cargar los datos exige wandb instalado y
+  una credencial (`seguimiento.falta_para_online`, que sólo lee archivos), y si W&B no abre sale
+  con error antes de la primera iteración. Con el supervisor mirando W&B, la corrida larga no
+  debería arrancar a ciegas. `auto` no cambia.
+- **El ruido, verificado** (`docs/mediciones/ruido-3d.txt`, sobre 28.3 M vóxeles de lotes reales
+  con `--mascara-cerebro`):
+  - la desviación es 0.0980348 contra 25/255 = 0.0980392 (−0.005 %), con media −2.3e-6;
+  - asimetría +0.0002, curtosis en exceso +0.0005 y colas gaussianas (|z| > 4: 6.5e-5 contra
+    6.3e-5);
+  - sin correlación entre vecinos (≤ 1e-4) ni entre iteraciones (−2e-5);
+  - sin recorte: el 3.7 % de los vóxeles ruidosos queda bajo 0;
+  - la entrada queda en 20.172 dB;
+  - idéntico bit a bit con 32, 16 + 16, 11 + 11 + 10, diez de 3 más uno de 2 y 32 de 1;
+  - en la evaluación, el mismo σ en los 12 recortes (0.09800–0.09812).
+  Contexto: la intensidad media de los cubos de cerebro es 0.316, así que σ es el 31 % de la
+  señal. El ruido ciego sigue apagado por defecto (`--sigma-max 0`).
+- **Otros:**
+  - `evaluate.load_vnet` arma la VNet3D si el `type` del regularizador es `tdv3d`: antes fallaba
+    con un `.pth` de `train3d.py`;
+  - `train.py` gana `--sigma-min/--sigma-max`, apagado, para la corrida 2D ciega pre-registrada
+    más abajo;
+  - `main` sube el límite de recompilación de dynamo a 16, porque los trozos desiguales son una
+    forma más;
+  - el comentario de `ddr/qsm3d._sin_tf32`: TF32 es de `intermedio`, no de `rapido`.
+- **Tests:** la suite completa en CPU, sin los PSNR publicados, pasa entera (217).
+
+---------------------------------------------------------------------------------------------------
+
+## 2026-10-16 — PRE-REGISTRO de `ciego2d-35k`: ¿un TDV 2D entrenado ciego al ruido queda estable en el punto de QSM?
+
+Pedido del autor, transmitido por su sesión «T/S * delta_max». Es una corrida de una semilla, y
+contesta si el número cruza 2, no cuánto lo mueve el ruido ciego.
+
+- **Por qué.** Los cuatro checkpoints 2D a σ = 25 empatan en PSNR. A la amplitud de uso del solver
+  de QSM (target_std 0.06, entrada con std 0.0658) dan (T/S)·λ_max = 2.79, 5.76 y 23.2, contra
+  0.99 del oficial (`docs/mediciones/qsm-prior-4corridas.txt` §2). *[Nota del 2026-10-17: ese 0.99
+  era la potencia sin converger y un solo extremo; con los dos, el paso del oficial expande ×1.27 y
+  el de los propios ×1.77–23.9 (`espectro-extremos-qsm.txt`).]* La hipótesis: con σ fijo la
+  pérdida nunca ve entradas casi limpias con perturbaciones chicas, y nada controla la curvatura
+  ahí; con σ ~ U(0, 55) por parche, σ_min = 0, ese régimen entra al entrenamiento. Es la primera de
+  las «Mejoras candidatas» de AGENTS.md. La dirección no está garantizada: en 3D, `--aug-ganancia
+  4` subió el número en COSMOS (`ventana-3d-12h`).
+- **Configuración:** `train.py --out runs/ciego2d-35k --mode referencia --iterations 35000
+  --lr-halve-start 25000 --lr-halve-every 5000 --channels 3 --seed 1 --sigma-min 0 --sigma-max
+  55`, en la GPU 1, unidad `tdv-ciego2d-35k`.
+  - Calendario: 25 000 iteraciones a 4e-4, 5 000 a 2e-4 y 5 000 a 1e-4; el hito de la 35 000 no
+    actúa.
+  - T_init en 8·δ y disyuntor por defecto.
+  - Evaluación cada 2 000 en CBSD68 a σ = 25 (`train.py` evalúa en `--sigma`).
+  - Costo previsto: ~13 h (37.7 h por 10⁵ en `referencia`).
+- **Endpoint primario:** (T/S)·λ_max(∇²R) en el punto QSM del checkpoint final, con el protocolo
+  de §2 (`scripts/diag_qsm_estabilidad.py`): lote (3, 3, 96, 96), alpha 4.8591, iteración de
+  potencia de 40 pasos en float64 y el signo del cociente de Rayleigh del dominante, que separa
+  el sobrepaso de la curvatura negativa. **Predicción: < 2.**
+- **Secundarios:**
+  - PSNR en CBSD68 a σ = 25 en la 34 000. Predicción: entre 0.05 y 0.4 dB bajo los 31.492 dB de
+    `t8delta-100k-s1` a la misma iteración, que tiene otro calendario. Es una referencia, no un
+    control.
+  - RMSE contra COSMOS en el ADMM de `../tdv`, con `scripts/corre_qsm_admm.py`, y si converge
+    antes de 100 iteraciones. Recordar que estable no es convergente.
+- **Sin control.** Un control con σ = 25 y el mismo calendario separaría «ruido ciego» de
+  «35 000 iteraciones en vez de 10⁵»: el número en QSM podría derivar con el largo. Queda
+  propuesto al autor, sin lanzar.
+- **Validación de la bandera:** con `--sigma-max 0` la rama nueva no corre. Medido antes de lanzar
+  (2026-10-16, 02:03–02:11, GPU 1, en serie): 120 iteraciones en `referencia`, semilla 1, con el
+  código de `ff4aa3c` y con el de esta rama. `traza.npy` (120 × 10) es idéntica bit a bit,
+  `history.json` es igual, y el PSNR de la 120 es 29.5970319233267 dB en los dos.
+- **Lanzada** el 2026-10-16 a las 02:28:18 en la GPU 1 (unidad `tdv-ciego2d-35k`, desde
+  `runs/ciego2d-35k/plan.sh`), con las dos GPUs al 0 % y sin otra unidad `tdv-*`. El código va
+  congelado en `runs/ciego2d-35k/codigo` (`git archive 52ac144`; `train.py` con sha256
+  `805282df…98c93`), con el `.venv` del checkout principal y el directorio de trabajo en la raíz:
+  cambiar el `train.py` del checkout no la toca.
+- **Las primeras 2 000 iteraciones** (anotado mientras corre; no es un resultado). Hubo cinco
+  rachas de 25 lotes rechazados seguidos, y cada una terminó en un rebobinado: 118–142 (a la 3, el
+  único respaldo que había; se refresca cada 250 iteraciones sanas), 265–289 y 325–349 (a la 253),
+  y 1 560–1 584 y 1 655–1 679 (a la 1 503). Las tres primeras fueron estallidos, con ‖g‖ de
+  3.4·10⁴ hasta 1.45·10⁶ contra una mediana de 232; las dos últimas, rachas de 5 a 14 veces la
+  mediana (‖g‖ de 600 a 1 600 contra 110–125). En la 2 000 llevaba 146 lotes rechazados (7.3 %) y 5
+  rebobinados, y lo rechazado o deshecho no entrena. `t8delta-100k-s1`, con la misma semilla y
+  T_init pero σ = 25, no rechazó nada antes de la 6 000 y terminó en 0.16 %.
+- **Primera evaluación:** 30.572 dB en CBSD68 a σ = 25 en la 2 000, contra 31.003 de
+  `t8delta-100k-s1` en la misma iteración. En la 250, la loss era 52.3 contra 31.0: la razón,
+  1.69, está cerca de la de E[σ²] (1 008 / 625 = 1.61), así que la escala del ruido ciego es la
+  esperada. Es una semilla (regla 6): dice qué pasó y que el disyuntor lo contuvo, no una tasa.
+
+---------------------------------------------------------------------------------------------------
+
+## 2026-10-16 — Auditoría del 3D antes de la corrida larga: sin errores de aritmética, cuatro cosas que decidir o vigilar
+
+Revisión completa de `ff4aa3c` y de los dos commits de trabajo de esta rama, en CPU, hecha por un
+subagente; sus scripts quedaron en la carpeta temporal del job y no se versionan.
+
+**Lo verificado:**
+- `R.grad` del TDV33 3D completo contra autograd en float64: 3.0e-16. El producto
+  Hessiano-vector, 7.0e-16, y el Hessiano es simétrico. 1 162 114 parámetros, y `project_` deja
+  K1 con media ~3e-7 y norma ≤ 1.
+- La acumulación da el gradiente del lote entero a ≤ 1e-15 con micro-lotes de 4, 2 y 1, y a
+  7.4e-16 con trozos desiguales.
+- `lr_en`, `cota_absoluta(48)` = 42 622.3, `vram_predicha(16)` = 57.06 GiB y `auto` = 16 en
+  96 GiB.
+- Las 48 orientaciones son el grupo completo del cubo, y la reanudación repite los parches.
+- Las listas de evaluación no comparten sujetos con las de 1 000, 2 000 ni 8 000.
+- QSM: el dipolo, alpha = 4.8591 y el criterio de parada son los del autor. bf16 en inferencia
+  cuesta −0.0016 dB.
+
+**Lo que hay que decidir o vigilar:**
+1. **QSM-TDV.** El checkpoint no carga directo: las claves y la bajada/subida son otras. Con la
+   bajada/subida de `ddr` dentro de QSM-TDV la equivalencia es exacta (|ΔR|/R = 0, ∇R a 1.5e-16;
+   `docs/mediciones/compat-qsm-tdv.txt` §3). Entonces la opción (a), una bandera en QSM-TDV más el
+   mapeo de claves, es compatible con lanzar ya; (b) y (c) obligan a reentrenar. Lo decide el
+   autor, antes de lanzar.
+2. **Pesos de cada evaluación.** Con `--eval-every 2000 --guardar-cada 5000`, 4 de cada 5
+   evaluaciones QSM no dejaban pesos, y si `best_qsm.pth` queda mal elegido no hay otro para
+   elegir a mano: en `v12-control` eligió el de 144 %. El README nuevo usa 2 500 y 2 500.
+3. **El número de estabilidad mide max|μ|, y el umbral 2 cubre sólo la curvatura positiva.** Con
+   el `best.pth` de `v12-control` (it 400, cubos de 24³), el punto de validación da 1.84 con
+   μ_min ≤ −90.6: un paso que expande ×1.99. Eso explica en parte por qué estable no es
+   convergente. El criterio de `best_qsm.pth` no cambia; queda documentado.
+4. **La configuración de la corrida larga no corrió entera en GPU.** Hace falta la prueba de 40
+   iteraciones en la Blackwell. En `v12-control` el mayor ‖g‖ aceptado, 13 778, quedó 3.1× bajo
+   la cota de 42 622, así que con cubos 100 % cerebro una excursión entre ~14 000 y la cota
+   pasaría (plausible, no visto).
+
+**Menores:**
+- una falla en el PSNR de validación corta la corrida, porque no tiene `try`;
+- el tronco no tiene grupo en W&B;
+- con Python 3.14 los workers no compartirían el dataset por copy-on-write (plausible); el
+  README dice que se use el 3.13 de `.python-version`;
+- con `--mascara-cerebro` el PSNR del recorte entero no sirve, porque la red no ve fondo ni
+  cráneo, y `best.pth` se elige con él. Hay que mirar `val/psnr_cerebro` (entrada siguiente).
+
+**Documentos:**
+- AGENTS.md y `ddr/qsm3d.py` dan el esquema como descenso explícito puro; el código aplica el
+  prox, como dice el README;
+- `evaluate.load_vnet` no cargaba un `.pth` 3D (arreglado);
+- TF32 en `rapido` (arreglado).
+
+---------------------------------------------------------------------------------------------------
+
+## 2026-10-16 — RESULTADO de la prueba de sobreajuste: la tubería memoriza un lote fijo y la validación se estanca; con datos frescos, 0.79 dB más en la 1 000
+
+La pregunta, pedida al autor: ¿la tubería 3D puede aprender? La prueba clásica es un lote chico
+fijo, con el mismo ruido: su pérdida tiene que bajar mucho, y la validación separarse de él.
+
+**Diseño:** dos corridas que difieren sólo en los datos, con el código de `cc4acfd`.
+- `runs/sobreajuste-3d-sin-disyuntor`, en la GPU 0: `--sobreajuste`, semilla 1, lote 4 = 2 + 2 de
+  48³, `rapido`, lr constante (`--hitos`), `--mascara-cerebro` (4 volúmenes), sin disyuntor, 1 500
+  iteraciones, validación cada 250.
+- `runs/sobreajuste-3d-control`, en la GPU 1: las mismas banderas sin `--sobreajuste`, con
+  `lista_train_1000.txt`, o sea parches y ruido frescos, y `--guard inf --guard-abs inf`. Se cortó
+  a mano después de la validación de la 1 000, para liberar la GPU 1; su `estado.json` lo dice.
+- Antes hubo un primer intento con el disyuntor, `runs/sobreajuste-3d`. Entró en un lazo
+  determinista: el estallido de la 8 se rechazaba igual cada vez y el rebobinado volvía a él.
+  Quedó cortado a mano en la ~100, y por eso `--sobreajuste` va sin disyuntor (bloque final de
+  `train3d.py`, SOBREAJUSTE).
+
+**Números**, PSNR en dB:
+
+| iteración | lote fijo | validación en cerebro, lote fijo | validación en cerebro, control |
+| --- | --- | --- | --- |
+| 250 | 31.793 | 31.119 | 31.306 |
+| 500 | 32.028 | 31.251 | 31.750 |
+| 750 | 32.421 | 31.517 | 32.057 |
+| 1 000 | 32.901 | 31.375 | 32.169 |
+| 1 250 | 33.277 | 31.531 | — |
+| 1 500 | 33.291 | 31.381 | — |
+
+La pérdida del lote fijo bajó de 1 072.7 en la 1 (no hacer nada vale 1 063) a 107 en la 100, 56.7
+en la 1 000 y 51.8 en la 1 500: −95 %, y todavía bajando, aunque más lento al final.
+
+**Veredicto: pasa.**
+- La tubería aprende: el lote fijo sube 1.50 dB entre la 250 y la 1 500 (31.79 → 33.29), mientras
+  su validación en cerebro queda entre 31.12 y 31.53.
+- Con datos frescos la validación sigue subiendo: 31.31 → 32.17 en la 1 000, 0.79 dB sobre la del
+  lote fijo a la misma iteración.
+- Eso es sobreajuste: la red mejora en lo que ve y no en lo que no ve.
+- No llega a memorizar el lote. TDV es una energía convolucional de 1.16 M parámetros y el ruido del
+  lote son 442 k valores al azar: la pérdida baja a 51.8, no a 0.
+
+**Además:**
+- **El mismo estallido en la 8.** Las dos corridas lo tienen (‖g‖ 785 698 y 638 427): es el evento
+  temprano de la semilla 1 que `v12-control` vio en la 13. Sin disyuntor, Adam lo absorbió y
+  ninguna murió. Es una semilla, no una tasa.
+- **El PSNR del recorte entero no sirve con `--mascara-cerebro`.** Salta entre 24.7 y 28.5 dB de una
+  validación a otra, porque la red no ve fondo ni cráneo, y `best.pth` se elige con ese número
+  (acá, el de la 750). En la corrida larga hay que mirar `val/psnr_cerebro`. El checkpoint que va
+  a QSM, `best_qsm.pth`, no depende de él. Si `best.pth` debería elegirse en el cerebro lo decide el
+  autor.
+- **VRAM:** pico de 7.74 GiB contra 7.67 predichos (micro-lote 2, sin evaluación QSM).
+- **Sonda con micro-lote libre en la 5070 Ti:** el 3, que no divide a 32, mide 11.47 GiB contra
+  11.19 predichos y es 1.5 % más rápido por parche que el 2 (0.2763 contra 0.2804 s;
+  `docs/mediciones/sonda-micro-libre-5070ti.txt`).
+
+---------------------------------------------------------------------------------------------------
+
+## 2026-10-17 — RESULTADO de `ciego2d-35k`: el número en QSM baja de 23.2 a 2.14, sin cruzar 2 y con el dominante negativo; el ADMM converge, a 33.18 %
+
+Corrida del PRE-REGISTRO del 2026-10-16, terminada (`"terminada": true`): 35 000 iteraciones en
+`referencia`, 13.09 h en la GPU 1, con el código de `52ac144` congelado en
+`runs/ciego2d-35k/codigo`. Mediciones del 2026-10-17 con las dos GPUs libres, el primario en CPU y
+el ADMM en la GPU 1; salida cruda en `docs/mediciones/qsm-prior-ciego2d.txt`.
+
+- **Primario, (T/S)·λ_max en el punto QSM del checkpoint final: 2.1377. Predicción, < 2: no se
+  cumple.** El dominante es curvatura negativa (v·Hv = −213.73), como el de `t8delta-100k-s1`, que
+  da 23.2169 (v·Hv = −2 809.34); el del oficial, 0.9942 (1.03 convergido), es positivo. Con
+  dominante negativo el umbral que corresponde no es 2 sino λ/S (0.0025): en esa dirección el paso
+  expande ×3.13 (el de `t8delta`, ×23.9), con cualquier tamaño de paso. *[Corregido el mismo día:
+  decía «el oficial contrae, ×0.006», que vale sólo en su dirección dominante; su extremo negativo,
+  ρ = −0.28, también hace expandir el paso, ×1.27 (entrada siguiente).]* El número baja 11 veces
+  respecto de σ = 25 y seguía moviéndose al final: 2.36 en la 34 000 (`best.pth`) y 2.14 en la
+  35 000, ya a lr/4. El script (`scripts/diag_ciego2d_estabilidad.py`) repite al dígito los
+  0.9942, 23.2169, 1.3778 y 2.0134 de la §2 de `qsm-prior-4corridas.txt`.
+- **Secundario, PSNR en CBSD68 a σ = 25 en la 34 000: 31.428 dB, 0.064 bajo los 31.492 de
+  `t8delta-100k-s1`. Predicción, entre 0.05 y 0.4 bajo: se cumple**, contra una referencia de otro
+  calendario y por debajo de los 0.45 dB que distingue una semilla (regla 5). A igual iteración
+  efectiva (33 134 contra 33 671, `scripts/iteracion_efectiva.py`), interpolando la de σ = 25,
+  sigue en ≈ −0.06 dB.
+- **Secundario, ADMM contra COSMOS (`scripts/corre_qsm_admm.py`, target_std 0.06, alpha 4.8591):
+  converge en 33 iteraciones, con RMSE final 33.18 %**; el mínimo, 32.33 %, cae en la 11 y después
+  sube. Con `best.pth`, 33.11 % (mínimo 32.24 %). El oficial converge en 27.34 %, y los tres
+  propios con σ = 25 no convergen en 100 (28.4–28.5 %). Es el primer propio que converge a
+  target_std 0.06, y lo hace con un número que dice que el paso expande: el índice es local y no
+  predice el ADMM. Es el solver sin máscara de la §1: no se compara directo con el enmascarado de
+  `../tdv` (sesión «arreglo enmascarar en TDV», 2026-10-17), que enmascara la entrada y la salida
+  del TDV y mide sobre el mapa enmascarado, y que barre el ciego en μ y target_std.
+- **El disyuntor:** 202 lotes rechazados (0.58 %) y 7 rebobinados, que con lo que deshicieron suman
+  866 iteraciones (2.47 %), todas antes de la 20 745; seis de los siete rebobinados cayeron en las
+  primeras 2 704. `t8delta-100k-s1`: 163 rechazos y 4 rebobinados en 10⁵, ninguno antes de la
+  6 000.
+- **Veredicto: la predicción primaria falla.** El ruido ciego coincide con una baja grande del
+  número (23.2 → 2.14), pero sin el control con σ = 25 y el mismo calendario no se separa del largo
+  (35 000 contra 10⁵) ni del calendario, y el signo del dominante no cambió. En el ADMM el ciego
+  converge, pero 5.8 puntos peor que el oficial. Es una semilla (regla 6). No va a `## Descartado`:
+  sin control, la hipótesis queda sin confirmar, no descartada.
+- **Qué sigue, propuesto al autor y sin lanzar:**
+  1. el control con σ = 25 y el mismo calendario (~13 h en una GPU);
+  2. un barrido de target_std para el ciego, como la §3 de `qsm-prior-4corridas.txt`: el 0.06 se
+     calibró para el oficial, y el ruido ciego es justamente lo que haría innecesaria esa escala
+     *[en curso el mismo día, con el solver enmascarado de `../tdv`, en la sesión «arreglo
+     enmascarar en TDV»]*;
+  3. la norma del jacobiano del paso, (I − (T/S)H)/(1 + λ/S), que cubre los dos extremos del
+     espectro: diría si el oficial tampoco expande por su lado negativo, y daría el signo de los de
+     1.1·δ y 2·δ (propuesta de la sesión «T/S * delta_max (Teoria)»). *[Medida el mismo día, en la
+     entrada siguiente: el oficial también expande, ×1.27, y ninguno de los cinco tiene un paso no
+     expansivo.]*
+
+---------------------------------------------------------------------------------------------------
+
+## 2026-10-17 — El oficial también tiene una dirección cóncava en el punto QSM, la más chica de los cinco; el ciego corrige una fracción casi fija a toda amplitud
+
+Pedido del autor después del RESULTADO de `ciego2d-35k` (en la rama `worktree-pruebas-3d`, junto con
+su pre-registro): «Prueba esas cosas entonces», las tres que quedaron abiertas. El barrido de
+`target_std` del ciego lo corre en GPU la sesión «arreglo enmascarar en TDV». Acá van las otras dos,
+en CPU porque esa sesión ocupa las dos GPUs, y el checkpoint entra a
+`checkpoints/Entrenados/ciego2d-35k.pth`.
+
+### Los dos extremos del espectro: ningún paso es no expansivo, ni el del oficial
+
+`scripts/diag_espectro_extremos.py` (local) → `docs/mediciones/espectro-extremos-qsm.txt`. Lanczos
+(`eigsh`, `'LA'` y `'SA'`) sobre el mismo H·v por diferencias centradas de la §2, en float64. Con
+los dos extremos sale la norma del jacobiano de un paso, `g = max(|1 − ρ_max|, |1 − ρ_min|)/(1 + λ/S)`
+con `ρ = (T/S)·μ`, y `g ≤ 1` si y sólo si todo `ρ_i` cae en `[−λ/S, 2 + λ/S]`.
+
+| | `g` a σ = 25 | `g` en std 0.06 | `ρ_min` … `ρ_max` en std 0.06 | qué expande en std 0.06 |
+|---|---|---|---|---|
+| oficial | 1.47 | **1.27** | −0.28 … 1.03 | curvatura negativa |
+| 1.1δ | 1.54 | 6.74 | −5.76 … 2.48 | los dos extremos |
+| 2δ | 1.06 | 1.77 | −0.66 … 2.79 | sobrepaso |
+| final s1 (8δ) | 1.03 | 23.91 | −23.22 … 6.93 | los dos extremos |
+| ciego (35 000) | 1.45 | 3.13 | −2.14 … 1.87 | curvatura negativa |
+
+- **Ninguno cumple `g ≤ 1`, en ningún punto.** El oficial denoisea a 31.537 dB con ×1.47 por paso a
+  σ = 25. TDV es no convexo a propósito: lo que separa al que anda es el tamaño de la expansión.
+- **De σ = 25 a std 0.06, el `g` del oficial baja y el de los cuatro propios sube.** Es un punto
+  por amplitud y un recorte de tres imágenes de 96×96: dice la dirección, no una curva.
+- **El 0.9942 de la §2 era la potencia sin converger.** Convergido da 1.0283 (415.85 contra
+  402.07). Los otros cuatro dominantes coinciden con la §2 al centésimo. El extremo negativo del
+  oficial, que es lo nuevo, se repitió con otro `v0` y tolerancia 1e-8
+  (`scripts/verifica_mu_min_oficial.py`, local): μ_min = −114.3478, μ_max = 415.8497.
+- **El 5.7623 de 1.1δ y el 23.2169 de 8δ eran extremos negativos.** Para esos dos y para el ciego,
+  más pasos `S` en inferencia no tocan el extremo que manda: la curvatura negativa crece también en
+  tiempo continuo (derivado, no medido).
+- **No ordena la convergencia del ADMM:** el ciego converge con `g` = 3.13 y 2δ no, con 1.77.
+
+### La fuerza del prior: el ciego corrige casi lo mismo a toda amplitud
+
+`scripts/diag_fuerza_ciego2d.py` (local) → `docs/mediciones/fuerza-prior-ciego2d.txt`, con el
+protocolo de la §5 (punto del solver, 32 tripletes, CPU en float32). Las cuatro anclas repiten la §5
+a 3–4 cifras.
+
+| ‖out−in‖/‖in‖ | std 0.015 | 0.03 | **0.06** | 0.12 | 0.25 |
+|---|---|---|---|---|---|
+| oficial | 0.6715 | 0.6191 | **0.5302** | 0.4132 | 0.3190 |
+| 1.1δ, 2δ y 8δ | 0.73–0.85 | 0.63–0.66 | **0.51–0.52** | 0.40–0.42 | 0.34–0.35 |
+| ciego | 0.4384 | 0.3798 | **0.3563** | 0.3530 | 0.3674 |
+
+- **En el punto del solver mueve el dato un tercio menos** (0.36 contra 0.51–0.53), achica menos el
+  contraste (std_out/std_in 0.906 contra 0.79–0.87), y su fuerza media sobre los pasos es la menor
+  (T·‖∇R‖ = 40.5 contra 51.6–100.5).
+- **No es «más débil» sin más:** su ganancia en la entrada es la mayor a std 0.06
+  (T·‖∇R‖/‖x‖ = 2.52 contra 1.61–1.94), y lo que corrige casi no depende de la amplitud. Se lee como
+  un prior que estima el ruido desde la entrada y deja de empujar cuando la ve limpia (lectura, no
+  medido paso a paso).
+- **Calza con lo que hace en el ADMM, pero no lo prueba:** converge más fácil y deja más artefactos
+  (33.18 % contra 28.4–28.5 %).
+
+**Predicción, registrada antes de ver el barrido de `target_std`:** la RMSE del ciego cambia poco con
+`target_std`, porque lo que corrige casi no depende de la amplitud. Criterio: su rango, del mejor al
+peor punto del barrido, queda bajo la mitad del que tiene el oficial con el mismo solver; con el de
+la §3, bajo 7 puntos (el oficial se mueve 14.5, de 27.34 % en 0.06 a 41.85 % en 0.25). Ningún valor
+lo lleva a la fuerza del oficial en 0.06: su máximo en el barrido de arriba es 0.44. Si se confirma,
+la perilla de fuerza de un prior ciego no es `target_std` sino otra, por ejemplo la μ del ADMM (sin
+medir).
+
+### El checkpoint, en `checkpoints/Entrenados/`
+
+`ciego2d-35k.pth` es `runs/ciego2d-35k/last.pth` sin el estado del optimizador: carga estricta y
+pesos idénticos. Tiene su sección en el README de esa carpeta. La bandera de ruido ciego de
+`train.py` sigue en el commit `52ac144` de `worktree-pruebas-3d`.
+
+### Lo que se corrige
+
+La entrada «POR QUÉ los checkpoints propios rinden peor como prior PnP de QSM» (2026-10-12) y las dos
+que la citan (2026-10-12 y 2026-10-13) llevan una nota encima. `AGENTS.md` y los comentarios del
+número del paso en `train3d.py` y en `ddr/qsm3d.py` dan ahora la expansión por paso en vez del 0.99.
+Dos filas nuevas en `## Descartado`. `docs/mediciones/qsm-prior-4corridas.txt` no se edita: lo
+corrige la nota de la entrada.
+
+**Pendiente, sin tocar el código:**
+- `train3d.py:1009` elige `best_qsm.pth` entre los que tienen `paso < UMBRAL_ESTABILIDAD`, y `paso` es el
+  módulo del dominante. Con el dominante negativo, el paso expande aunque el módulo quede bajo 2. Lo
+  dice el comentario corregido; qué condición usar lo decide el autor.
+- `docs/presentacion/qsm_admm.py` (líneas 26 y 111) sigue diciendo 0.99. Se corrige cuando se
+  regenere la presentación, como el «0.33 dB».
+
+**Consecuencia práctica:** con potencia y sin signo, `(T/S)·λ_max` no alcanza para leer la
+estabilidad del paso: hacen falta los dos extremos. Y aun con ellos el criterio no es `g ≤ 1`, sino
+cuánto expande en el punto de uso contra el oficial (×1.27). Del ciego, lo que sigue es el barrido de
+`target_std`, que pone a prueba la predicción de arriba.
+
+---------------------------------------------------------------------------------------------------
+
+## 2026-10-18 — Decisiones del autor para la corrida larga: el NRMSE decide el lr, 100 000 de techo
+
+Respuestas del autor a las decisiones abiertas, una por una:
+
+- **Calendario.** «Que decida el NRMSE, y después de que se estanque vamos haciendo lr/2»: `--hitos`
+  sola y `--meseta 2`. «El n° de iteraciones queda como referencia […] sólo como parámetro de
+  techo; dejemos 100k»: `--iterations 100000`, y la corrida puede cortarse antes por sí sola. El
+  comando está en el README, «Llevar el entrenamiento 3D a otra máquina», ítem 6.
+- **Criterio de éxito, de referencia:** NRMSE bajo 26.57 %, con el ADMM en ~25 iteraciones («que es
+  lo que se demora ahora»), «aunque no influye en nada un éxito sí o no».
+- **W&B:** el proyecto `training-tdv3d` va público.
+- **`main`:** las ramas `worktree-pruebas-3d` y `worktree-medidas-ciego2d` entran juntas, en un solo
+  commit con título corto, como siempre; la historia detallada queda en etiquetas locales.
+- **`train.py`:** los dos arreglos que quedaron pendientes en «README y AGENTS.md reescritos»: el
+  comentario de `DELTA_ADAM` ya no habla del «piso de la regla 2-delta», y el `--help` de
+  `--checkpointing` dice −78 % y +31 %, lo del banco. El bloque final dice que la regla se retiró.
+  El AST sólo cambia en esos dos textos, así que la aritmética es la misma.
+- **Siguen abiertas:** la compatibilidad con QSM-TDV (opciones (a), (b) y (c) de la entrada «El
+  checkpoint 3D no carga exacto en QSM-TDV…») y con qué se eligen `best.pth` y `best_qsm.pth`.
+
+---------------------------------------------------------------------------------------------------
+
+## 2026-10-18 — PRE-REGISTRO de `control2d-35k`: ¿la baja del número en `ciego2d-35k` es del ruido ciego o del largo?
+
+Pedido del autor («Haz las mediciones»). Es el control que propuso el pre-registro de
+`ciego2d-35k`: una sola variable distinta, el ruido.
+
+- **Por qué.** `ciego2d-35k` (σ ~ U(0, 55), 35 000 iteraciones, hitos 25 000/30 000) expande el paso
+  ×3.13 en el punto QSM, contra ×23.9 de `t8delta-100k-s1` (σ = 25, 10⁵ iteraciones, lr/2 cada
+  25 000; `espectro-extremos-qsm.txt`). Entre las dos cambian el ruido, el largo y el calendario.
+- **Configuración:** `train.py --out runs/control2d-35k --mode referencia --iterations 35000
+  --lr-halve-start 25000 --lr-halve-every 5000 --channels 3 --seed 1`, con σ = 25 fijo (el
+  default), y el mismo código congelado que `ciego2d-35k` (etiqueta local `codigo-ciego2d-35k` =
+  `52ac144`; con el ruido ciego apagado es bit a bit `ff4aa3c`). Costo: ~13.1 h en una GPU (el
+  ciego tardó 13.09 h). Se lanza a mano cuando haya una GPU libre, sin encadenarlo a nada.
+- **Endpoint primario:** la expansión por paso g en el punto QSM del checkpoint final, con los dos
+  extremos (`scripts/diag_espectro_extremos.py`, el protocolo de `espectro-extremos-qsm.txt`), y el
+  número de la §2 con su signo (`scripts/diag_ciego2d_estabilidad.py`). **Regla de decisión,
+  escrita antes:** g ≥ 10 → la baja del ciego se atribuye al ruido ciego; g ≤ 5 → al largo y al
+  calendario; entre 5 y 10, no se decide. Es una semilla por brazo: dice cuál de las dos lecturas
+  queda en pie, no cuánto aporta cada una.
+- **Secundarios:** PSNR en CBSD68 a σ = 25 en la 34 000, contra 31.428 del ciego y 31.492 de
+  `t8delta-100k-s1` (0.45 dB es lo mínimo que distingue una semilla, regla 5); y el ADMM contra
+  COSMOS con `scripts/corre_qsm_admm.py` (sin máscara, target_std 0.06): si converge y su RMSE,
+  contra 33.18 % del ciego y 28.36 % de `t8delta-100k-s1`.

@@ -343,19 +343,21 @@ def test_sin_guard_amp_el_paso_1_va_sin_checkpoint():
 
 
 def test_micro_lote_auto():
-    """Los casos de la especificación. A 48^3 en 48 GiB entrarían 12, pero el lote es la receta y
-    se parte entero: 8. Una porción de 48 GB decimales, 44.7 GiB, da lo mismo; la 5070 Ti, 2. Con
-    checkpointing y sin --guard-amp el paso 1 va sin checkpoint: en la 5070 Ti entran 16 y no 32
-    (23.93 GiB predichos contra 13.90 útiles), y a 64^3 en 48 GiB, 16 (los 32, 55.89). En la de
-    destino, 96 GB en GiB o en GB decimales, 16: los 32 piden 113.5."""
+    """Los casos de la especificación. A 48^3 en 48 GiB entran 12, y 32 se parte en 11 + 11 + 10:
+    las tres pasadas de 12 con 39.4 GiB en vez de 42.9. Una porción de 48 GB decimales, 44.7 GiB,
+    da lo mismo; la 5070 Ti, 3 (diez trozos de 3 y uno de 2: once pasadas y no dieciséis). Con
+    checkpointing y sin --guard-amp el paso 1 va sin checkpoint: en la 5070 Ti entran 18 y no 32
+    (23.93 GiB predichos contra 13.90 útiles), así que dos pasadas de 16, y a 64^3 en 48 GiB, 16
+    (los 32, 55.89). En la de destino, 96 GB en GiB o en GB decimales, entran 24 y los 32 piden
+    113.5: dos pasadas, 16 + 16."""
     auto = train3d.micro_lote_auto
     assert auto(32, 48, "rapido", False, 96) == 16
     assert auto(32, 48, "rapido", False, 96e9 / 2 ** 30) == 16
-    assert auto(32, 48, "rapido", False, 48) == 8
-    assert auto(32, 48, "rapido", False, 48e9 / 2 ** 30) == 8
-    assert auto(32, 48, "rapido", False, 16) == 2
-    assert auto(32, 48, "rapido", False, GIB_5070TI) == 2
-    assert auto(32, 64, "rapido", False, 48) == 4
+    assert auto(32, 48, "rapido", False, 48) == 11
+    assert auto(32, 48, "rapido", False, 48e9 / 2 ** 30) == 11
+    assert auto(32, 48, "rapido", False, 16) == 3
+    assert auto(32, 48, "rapido", False, GIB_5070TI) == 3
+    assert auto(32, 64, "rapido", False, 48) == 5
     assert auto(32, 48, "rapido", True, 48) == 32
     assert auto(32, 48, "rapido", True, GIB_5070TI) == 16
     assert auto(32, 48, "rapido", True, GIB_5070TI, entrada_con_grad=True) == 32
@@ -366,28 +368,51 @@ def test_micro_lote_auto():
         auto(32, 48, "rapido", False, 4)
 
 
-def test_micro_lote_auto_es_el_mayor_divisor_que_entra():
-    """Sobre una grilla de lotes, parches, modos y presupuestos: siempre un divisor de `--lote`,
-    que entra con el margen, y ninguno mayor entra; si no devuelve nada es porque ni 1 entra."""
+def test_la_particion_es_casi_igual_y_suma_el_lote():
+    """Para todo micro-lote m de todo lote: ceil(lote/m) trozos que suman el lote, difieren a lo
+    sumo en uno, no pasan de m y van de mayor a menor; con un divisor, todos iguales. El mayor
+    trozo da la misma partición: es el que `main` guarda como micro-lote efectivo."""
+    for lote in range(1, 50):
+        for m in range(1, lote + 1):
+            t = train3d.particion(lote, m)
+            assert sum(t) == lote and len(t) == -(-lote // m)
+            assert max(t) - min(t) <= 1 and max(t) <= m and t == sorted(t, reverse=True)
+            assert lote % m or t == [m] * (lote // m)
+            assert train3d.particion(lote, t[0]) == t
+        assert train3d.tamanos_utiles(lote) == sorted({train3d.particion(lote, m)[0]
+                                                       for m in range(1, lote + 1)})
+    assert train3d.particion(32, 12) == [11, 11, 10]
+    assert train3d.tamanos_utiles(32) == [1, 2, 3, 4, 5, 6, 7, 8, 11, 16, 32]
+
+
+def test_micro_lote_auto_deja_la_menor_cantidad_de_trozos():
+    """Sobre una grilla de lotes, parches, modos y presupuestos: un micro-lote que entra con el
+    margen, que es el mayor trozo de su partición, y ningún otro que entre deja menos trozos; si
+    no devuelve nada es porque ni 1 entra."""
     for lote in (1, 2, 8, 12, 24, 32, 48):
         for parche in (16, 32, 48, 64, 96):
             for (modo, ckpt), con_grad in itertools.product(train3d.POR_VOXEL, (False, True)):
                 for presupuesto in (2, 8, 16, 24, 44.7, 48, 80, 96):
                     util = presupuesto * (1 - train3d.MARGEN)
-                    entra = [d for d in train3d.divisores(lote)
-                             if train3d.vram_predicha(d, parche, modo, ckpt, con_grad) <= util]
+                    entra = [m for m in range(1, lote + 1)
+                             if train3d.vram_predicha(m, parche, modo, ckpt, con_grad) <= util]
                     try:
                         n = train3d.micro_lote_auto(lote, parche, modo, ckpt, presupuesto,
                                                     con_grad)
                     except ValueError:
                         assert not entra
                         continue
-                    assert lote % n == 0 and entra and n == max(entra)
+                    trozos = len(train3d.particion(lote, n))
+                    assert n in entra and train3d.particion(lote, n)[0] == n
+                    assert trozos == min(len(train3d.particion(lote, m)) for m in entra)
 
 
 @pytest.mark.parametrize("banderas, mensaje", [
-    (["--lote", "32", "--micro-lote", "12"], "--lote 32 no es múltiplo de --micro-lote 12"),
+    (["--lote", "32", "--micro-lote", "40"], "--micro-lote 40 es mayor que --lote 32"),
+    (["--lote", "0"], "--lote 0: tiene que ser al menos 1"),
     (["--micro-lote", "0"], "tiene que ser al menos 1"),
+    (["--meseta", "-1"], "no pueden ser negativos"),
+    (["--meseta", "2", "--qsm-datos", ""], "--meseta 2 decide con el NRMSE QSM"),
     (["--micro-lote", "ocho"], "un entero o `auto`"),
     (["--patch", "96", "--vram-gb", "2"], "ni un parche de 96^3 entra en 2.00 GiB"),
     # Con checkpointing, el paso 1 cuenta sin --guard-amp y no con: `main` le pasa la bandera.
@@ -403,6 +428,27 @@ def test_un_micro_lote_imposible_es_un_error(banderas, mensaje, tmp_path, capsys
         train3d.main(["--out", str(tmp_path / "x"), *banderas])
     assert salida.value.code == 2
     assert mensaje in capsys.readouterr().err
+    assert not (tmp_path / "x").exists()
+
+
+def test_sin_gpu_y_compilado_no_entrena_en_cpu(tmp_path, capsys, monkeypatch):
+    """Sin GPU visible (un driver viejo, por ejemplo) y sin --sin-compilar, sale con 2 antes de
+    tocar `--out`, en vez de entrenar compilado en CPU sin avisar."""
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    # `main` llega a sembrar torch y a fijar los flags de cuDNN: se reponen al salir.
+    for modulo, flag in ((torch.backends.cudnn, "benchmark"),
+                         (torch.backends.cudnn.conv, "fp32_precision"),
+                         (torch.backends.cuda.matmul, "fp32_precision")):
+        monkeypatch.setattr(modulo, flag, getattr(modulo, flag))
+    rng = torch.get_rng_state()
+    try:
+        with pytest.raises(SystemExit) as salida:
+            train3d.main(["--out", str(tmp_path / "x")])
+    finally:
+        torch.set_rng_state(rng)
+    assert salida.value.code == 2
+    error = capsys.readouterr().err
+    assert "torch no ve ninguna GPU" in error and "--sin-compilar" in error
     assert not (tmp_path / "x").exists()
 
 
@@ -839,11 +885,13 @@ def test_el_respaldo_del_estado_es_el_del_momento_en_que_se_tomo(corridas):
 
 # --- BUCLE Y EVALUACIÓN ----------------------------------------------------------------------
 
-def test_el_bucle_no_corta_nunca():
-    """Como en `train.py`: los análisis de supervivencia cuentan filas de la traza, y un `break`
-    haría que una corrida cortada se contara como censurada viva."""
+def test_el_bucle_corta_solo_por_meseta():
+    """Como en `train.py`, los análisis de supervivencia cuentan filas de la traza: sin --meseta el
+    bucle no corta nunca. El único `break` es el de la meseta, que deja el corte escrito en
+    `estado.json` (`test_la_meseta_parte_el_lr_y_corta`)."""
     fuente = inspect.getsource(train3d.main)
-    assert "break" not in fuente
+    assert fuente.count("break") == 1 and "if corte:\n            break" in fuente
+    assert fuente.count("corte = it") == 1 and fuente.count("corte = ") == 2
     assert "if not rechazado:\n            opt.step()" in fuente
 
 
@@ -1443,3 +1491,189 @@ def test_la_mascara_de_cerebro_no_cambia_los_psnr_de_antes(tmp_path):
     np.save(carpeta / "v1.npy", np.ones((20, 22, 23), bool))
     with pytest.raises(ValueError, match="máscara"):
         VolumeDataset3D(archivos, recorte=16, mascaras=carpeta)
+
+
+# --- TROZOS DESIGUALES, SOBREAJUSTE, MESETA Y W&B ONLINE -------------------------------------
+
+# Imprime la huella de cada lote ruidoso que arma el bucle: el sobreajuste repite el mismo en cada
+# iteración, y su primero es el de la corrida normal con la misma semilla.
+HUELLAS = ("import hashlib, sys, train3d\n"
+           "def con_huella(f):\n"
+           "    def g(lote, *a, **k):\n"
+           "        r = f(lote, *a, **k)\n"
+           "        print('RUIDOSA', len(lote), hashlib.sha1(r.numpy().tobytes()).hexdigest(),\n"
+           "              flush=True)\n"
+           "        return r\n"
+           "    return g\n"
+           "train3d.add_noise = con_huella(train3d.add_noise)\n"
+           "train3d.main(sys.argv[1:])\n")
+# El NRMSE QSM de cada evaluación de la meseta: con paciencia 1 y 2 mitades, la 1 y la 2 mejoran,
+# la 3 y la 4 parten el lr (hitos 3 y 4), la 5 mejora y la 6 corta. La 7 y la 8 no llegan a correr.
+NRMSE_MESETA = [5.0, 4.0, 4.5, 4.2, 3.9, 4.0, 9.0, 9.0]
+MESETA = ["--iterations", "8", "--eval-every", "1", "--guardar-cada", "1", "--meseta", "1",
+          "--meseta-mitades", "2"]
+# W&B que no abre aunque haya credencial, como con la red caída al arrancar.
+NO_ABRE = ("import sys, train3d\n"
+           "train3d.seguimiento._hay_credencial = lambda: True\n"
+           "train3d.seguimiento.abre = lambda *a, **k: None\n"
+           "train3d.main(sys.argv[1:])\n")
+
+
+def huellas(salida):
+    """`(tamaño, huella)` de cada lote ruidoso, en orden."""
+    return [tuple(l.split()[1:]) for l in salida.splitlines() if l.startswith("RUIDOSA")]
+
+
+@pytest.fixture(scope="module")
+def nuevas(tmp_path_factory):
+    """Las corridas de esta sección, en paralelo: el lote de 3 en trozos de 1, de 2 + 1 y de 3; el
+    sobreajuste de ese lote; la meseta con el NRMSE forzado y la que W&B no abre. Después, la
+    meseta reanudada desde su estado de la 3."""
+    raiz = tmp_path_factory.mktemp("nuevas")
+    base = arma_datos(raiz / "datos")
+    cosmos = arma_cosmos(raiz / "cosmos")
+    # Sin el punto de estabilidad, que también pasa por `add_noise`: las huellas son las del bucle.
+    corto = ["--iterations", "4", "--eval-every", "2", "--lote", "3", "--estabilidad-lado", "0"]
+    procesos = {f"trozos-{m}": lanza(base, raiz / f"trozos-{m}", *corto, "--micro-lote", str(m),
+                                     codigo=HUELLAS) for m in (1, 2, 3)}
+    procesos["sobreajuste"] = lanza(base, raiz / "sobreajuste", *corto, "--micro-lote", "3",
+                                    "--sobreajuste", codigo=HUELLAS)
+    procesos["meseta"] = lanza(base, raiz / "meseta", *QSM, "--qsm-datos", str(cosmos), *MESETA,
+                               codigo=forzada([1.0] * 8, NRMSE_MESETA))
+    no_abre = lanza(base, raiz / "no-abre", "--seguimiento", "online", codigo=NO_ABRE)
+    salidas = dict(zip(procesos, (out for out, _ in espera(*procesos.values()))))
+    (_, error_no_abre), = espera(no_abre, codigo=2)
+
+    reanudada = raiz / "meseta-reanudada"
+    reanudada.mkdir()
+    shutil.copy(raiz / "meseta" / "estado-000003.pth", reanudada)
+    (salidas["meseta-reanudada"], _), = espera(lanza(
+        base, reanudada, *QSM, "--qsm-datos", str(cosmos), *MESETA,
+        "--reanudar", str(reanudada / "estado-000003.pth"),
+        codigo=forzada([1.0] * 5, NRMSE_MESETA[3:])))
+    return {"raiz": raiz, "salidas": salidas, "no_abre": error_no_abre}
+
+
+def test_un_lote_en_trozos_desiguales_es_el_mismo_lote(nuevas):
+    """El lote de 3 partido en 1 + 1 + 1, en 2 + 1 y entero: los mismos parches con el mismo ruido
+    (16^3 es múltiplo de 16) y el mismo gradiente salvo el orden de suma. Lo que no depende de la
+    partición, idéntico; la columna 10 es la del primer trozo, y con un solo trozo es la 5."""
+    raiz, salidas = nuevas["raiz"], nuevas["salidas"]
+    t = {m: traza(raiz / f"trozos-{m}") for m in (1, 2, 3)}
+    for m in (1, 2):
+        np.testing.assert_allclose(t[m][:, :6], t[3][:, :6], rtol=1e-5)
+        np.testing.assert_array_equal(t[m][:, 11:], t[3][:, 11:])
+    assert bit_a_bit(t[3][:, 10], t[3][:, 5]) and not np.array_equal(t[2][:, 10], t[2][:, 5])
+    assert [h[0] for h in huellas(salidas["trozos-2"])] == ["2", "1"] * 4
+    for m, trozos in ((1, "3x1"), (2, "2+1"), (3, "1x3")):
+        assert f"lote 3 = {trozos} de 16^3" in salidas[f"trozos-{m}"]
+        assert json.loads((raiz / f"trozos-{m}" / "config.json").read_text())["micro_lote"] == m
+
+
+def test_el_sobreajuste_repite_el_mismo_lote_con_el_mismo_ruido(nuevas):
+    """Cada iteración, el mismo lote ruidoso: el primero de la corrida normal con la misma semilla
+    (los 3 volúmenes de `arma_datos` son los primeros 3). La primera pérdida es la de esa corrida,
+    bit a bit, y después baja; va sin disyuntor, y la validación lleva el PSNR del lote."""
+    raiz, salidas = nuevas["raiz"], nuevas["salidas"]
+    fijo, normal = huellas(salidas["sobreajuste"]), huellas(salidas["trozos-3"])
+    assert len(fijo) == 4 and len(set(fijo)) == 1 and fijo[0] == normal[0]
+    assert len(set(normal)) == 4
+    t = traza(raiz / "sobreajuste")
+    assert bit_a_bit(t[:1, 0], traza(raiz / "trozos-3")[:1, 0]) and t[-1, 0] < t[0, 0]
+    assert (t[:, 8] == 0).all()
+    config = json.loads((raiz / "sobreajuste" / "config.json").read_text())
+    assert config["guard"] == config["guard_abs"] == math.inf
+    historia = json.loads((raiz / "sobreajuste" / "history.json").read_text())
+    for entrada in historia:
+        mse = t[entrada["iteration"] - 1, 0] / 16 ** 3
+        assert entrada["psnr_lote"] == pytest.approx(10 * math.log10(1 / mse), rel=1e-9)
+    assert "psnr_lote" not in json.loads((raiz / "trozos-3" / "history.json").read_text())[0]
+    assert "sin disyuntor" in salidas["sobreajuste"]
+
+
+def test_paso_meseta():
+    """La regla, evaluación por evaluación. Con paciencia 1, toda evaluación que no mejora parte el
+    lr hasta agotar las mitades, y la siguiente corta; con 2 hacen falta dos seguidas, y la cuenta
+    vuelve a cero al mejorar y al partir. Un NRMSE que no es finito no mejora nunca."""
+    m = train3d.meseta_nueva()
+    acciones = [train3d.paso_meseta(m, x, it, 1, 2) for it, x in enumerate(NRMSE_MESETA[:6], 1)]
+    assert acciones == ["mejora", "mejora", "mitad", "mitad", "mejora", "corte"]
+    assert m == {"hitos": [3, 4], "sin_mejora": 0, "mejor": 3.9, "it_mejor": 5}
+    m = train3d.meseta_nueva()
+    acciones = [train3d.paso_meseta(m, x, it, 2, 1)
+                for it, x in enumerate([5, 5.1, 4.9, 5, 5.2, 5.3, 5.4], 1)]
+    assert acciones == ["mejora", "espera", "mejora", "espera", "mitad", "espera", "corte"]
+    m = train3d.meseta_nueva()
+    assert [train3d.paso_meseta(m, x, it, 1, 1) for it, x in
+            enumerate([math.nan, math.inf, 3.0], 1)] == ["mitad", "corte", "mejora"]
+    assert train3d.lr_en(4, [] + m["hitos"]) == train3d.LR / 2
+
+
+def test_la_meseta_parte_el_lr_y_corta(nuevas):
+    """Con el NRMSE forzado: lr/2 desde la 4 y desde la 5, y en la 6, sin mitades, el corte. La
+    traza tiene 6 filas, el estado de la 6 se guarda, y `estado.json` dice terminada, con el corte
+    y las iteraciones hechas. Reanudada desde la 3, la misma corrida bit a bit."""
+    raiz, salidas = nuevas["raiz"], nuevas["salidas"]
+    t = traza(raiz / "meseta")
+    assert t.shape[0] == 6
+    np.testing.assert_array_equal(t[:, 11], train3d.LR * np.array([1, 1, 1, 0.5, 0.25, 0.25]))
+    hecho = json.loads((raiz / "meseta" / "estado.json").read_text())
+    assert hecho["terminada"] and hecho["iteraciones_pedidas"] == 8
+    assert hecho["iteraciones_hechas"] == 6
+    assert hecho["corte"] == {"motivo": "meseta del NRMSE QSM", "iteracion": 6, "mitades": 2}
+    assert hecho["meseta"]["hitos"] == [3, 4] and hecho["meseta"]["mejor"] == 3.9
+    assert (raiz / "meseta" / "estado-000006.pth").exists()
+    assert not (raiz / "meseta" / "estado-000007.pth").exists()
+    assert len(qsm_jsonl(raiz / "meseta")) == 6
+    lineas = [l for l in salidas["meseta"].splitlines() if "meseta:" in l]
+    assert "lr/2 desde la 4, mitad 1 de 2" in lineas[1] and "desde la 5, mitad 2" in lineas[2]
+    assert "la corrida se corta en la 6" in lineas[3]
+    assert "cortada por meseta en la 6, tras 2 mitades" in salidas["meseta"]
+    seguida, reanudada = raiz / "meseta", raiz / "meseta-reanudada"
+    assert bit_a_bit(traza(reanudada), t)
+    otra = json.loads((reanudada / "estado.json").read_text())
+    assert all(otra[k] == hecho[k] for k in ("iteraciones_hechas", "corte", "meseta"))
+    sin_reloj = [{k: v for k, v in f.items() if k != "segundos"} for f in qsm_jsonl(seguida)]
+    assert [{k: v for k, v in f.items() if k != "segundos"}
+            for f in qsm_jsonl(reanudada)] == sin_reloj
+
+
+def test_online_sin_wandb_listo_sale_antes_de_entrenar(nuevas, tmp_path, capsys, monkeypatch):
+    """Con el supervisor mirando W&B, `--seguimiento online` no arranca a ciegas. Sin credencial
+    (o sin wandb instalado) sale con 2 antes de cargar los datos y sin tocar `--out`; si W&B no
+    abre, sale con 2 antes de la primera iteración."""
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(seguimiento, "_hay_credencial", lambda: False)
+    with pytest.raises(SystemExit) as salida:
+        train3d.main(["--out", str(tmp_path / "x"), "--seguimiento", "online"])
+    assert salida.value.code == 2
+    error = capsys.readouterr().err
+    assert "--seguimiento online: " in error and ("wandb login" in error or "uv sync" in error)
+    assert not (tmp_path / "x").exists()
+    assert "--seguimiento online: W&B no abrió" in nuevas["no_abre"]
+    assert not (nuevas["raiz"] / "no-abre" / "traza.npy").exists() or \
+        traza(nuevas["raiz"] / "no-abre").shape[0] == 0
+
+
+def test_load_vnet_carga_un_checkpoint_3d(nuevas):
+    """`evaluate.load_vnet` arma la VNet que dice el `type` del regularizador: un `.pth` de
+    `train3d.py` carga como VNet3D con `strict=True`, con los pesos guardados. Los 2D siguen
+    cargando como antes (tests/test_reproduction.py)."""
+    from evaluate import load_vnet
+    ruta = nuevas["raiz"] / "trozos-3" / "best.pth"
+    modelo, config = load_vnet(ruta)
+    guardado = torch.load(ruta, map_location="cpu", weights_only=False)["model"]
+    assert isinstance(modelo, VNet3D) and config["R"]["type"] == "tdv3d"
+    assert all(torch.equal(v, guardado[k]) for k, v in modelo.state_dict().items())
+
+
+def test_falta_para_online(monkeypatch):
+    """Lo que `train3d.py` pregunta antes de cargar los datos: sin wandb, `uv sync`; sin
+    credencial, `wandb login`; con las dos cosas, nada."""
+    if HAY_WANDB:
+        monkeypatch.setattr(seguimiento, "_hay_credencial", lambda: False)
+        assert "wandb login" in seguimiento.falta_para_online()
+        monkeypatch.setattr(seguimiento, "_hay_credencial", lambda: True)
+        assert seguimiento.falta_para_online() is None
+    monkeypatch.setattr(seguimiento.importlib.util, "find_spec", lambda nombre: None)
+    assert "uv sync" in seguimiento.falta_para_online()

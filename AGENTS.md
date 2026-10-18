@@ -109,7 +109,10 @@ título: no renumerar ni renombrar sin un `grep -rn` sobre `.claude/`, `scripts/
   `referencia`, antes y después: `traza.npy` idéntica bit a bit.
 - **Ningún entrenador corta el bucle** (ni `break`, ni aborto por `NaN`, ni early stopping): los
   análisis de supervivencia cuentan filas de la traza. Una corrida terminó si su `estado.json` dice
-  `"terminada": true`; las cortadas a mano llevan uno escrito a mano, con `false` y el motivo.
+  `"terminada": true`; las cortadas a mano llevan uno escrito a mano, con `false` y el motivo. La
+  única excepción es `--meseta` de `train3d.py`, pedida el 2026-10-16 y apagada por defecto:
+  agotadas las mitades del lr, corta y lo deja en `estado.json` (`corte`, con `iteraciones_hechas`
+  menor que las pedidas), así que se cuenta como censurada por diseño en `corte.iteracion`.
 - **Clases, sólo si heredan de `nn.Module` o `Dataset`, o si las tiene el port** (skill `huella`).
 - **Sin test que los cubra:** la pérdida mira sólo `x_S`; el ruido se sortea nuevo en cada
   iteración; y no se parte del checkpoint oficial si el resultado se compara con él.
@@ -134,6 +137,19 @@ título: no renumerar ni renombrar sin un `grep -rn` sobre `.claude/`, `scripts/
   (Fig. 10, `α₁ < 1`); aquí, la peor dirección: no se contradicen.
 - **A QSM se pasa `best_qsm.pth`, y estable no es convergente:** en `v12-control`, estabilidad 1.54
   y ADMM divergido a 144 % (`ventana-3d-12h.txt`); se mira `nrmse_final_pct`.
+- **Con `--mascara-cerebro`, el PSNR del recorte entero no sirve:** la red no ve fondo ni cráneo, y
+  salta 24.7–28.5 dB entre validaciones (prueba de sobreajuste, 2026-10-16). Se mira
+  `val/psnr_cerebro`; `best.pth` se sigue eligiendo con el del recorte entero.
+- **El micro-lote es cualquier entero** (2026-10-16): el lote se parte en trozos casi iguales y
+  `auto` deja menos pasadas (16 en 96 GiB, 11 en 48, 3 en la 5070 Ti). Con trozos iguales la
+  corrida es bit a bit la de antes; la sonda mide los tamaños que cambian las pasadas.
+- **`--sobreajuste` va sin disyuntor:** con datos fijos, un lote rechazado deja igual la iteración
+  siguiente y el rebobinado vuelve al mismo estallido (`runs/sobreajuste-3d`). La prueba pasó:
+  lote fijo a 33.29 dB contra 31.38 de su validación en cerebro, y 32.17 con datos frescos en la
+  1 000 (bitácora, 2026-10-16).
+- **Fallar al arrancar:** `--seguimiento online` sale con error si falta wandb o la credencial, o
+  si W&B no abre; sin GPU visible y sin `--sin-compilar`, `train3d.py` también, en vez de
+  entrenar en CPU.
 - **Memoria, abierto:** `MARGEN = 0.10` (`train3d.py:84`) es un supuesto, y la sonda no corre la
   validación. Un lector midió (2026-10-15) a 24³ × 8 un pico de 8.16 GiB contra 4.14 predichos, y
   la sonda ~15 % sobre el modelo (a 48³, ~1 %: `runs/v12-sonda*`); bitácora, «README y AGENTS.md
@@ -177,9 +193,15 @@ recorte del calendario se traslada al 3D?»).
   contra bf16, 1.31× de hazard, p = 0.61 (`precision.txt`).
 - **`λ` es casi plana en denoising** (apagarla, −0.033 dB, `lambda-sensibilidad.txt`); en QSM, sin
   medir.
-- **Para un prior PnP el PSNR no elige:** a la amplitud de QSM el oficial da 0.99 de estabilidad y
-  los propios 2.79–23.2, a 0.022 dB, y sólo el oficial converge (`qsm-prior-4corridas.txt`,
-  `scripts/diag_qsm_estabilidad.py`). Una Lipschitz con dirección aleatoria es cota inferior.
+- **Para un prior PnP el PSNR no elige:** a la amplitud de QSM el paso del oficial expande ×1.27
+  (ρ de −0.28 a 1.03) y el de los tres propios de σ = 25, ×1.77–23.9, con 0.022 dB de PSNR entre
+  ellos, y de esos cuatro sólo el oficial converge (`espectro-extremos-qsm.txt`; el 0.99 de la §2
+  de `qsm-prior-4corridas.txt` era la potencia sin converger, y un solo extremo). Ninguno tiene un
+  paso no expansivo: el oficial da ×1.47 a σ = 25. Una Lipschitz con dirección aleatoria es cota
+  inferior. El dominante del oficial es curvatura positiva y el de `t8delta-100k-s1`, negativa;
+  `ciego2d-35k` expande ×3.13, sólo por curvatura negativa, y converge igual, a 33.18 %
+  (`qsm-prior-ciego2d.txt`), mientras el de 2·δ no converge con ×1.77: el índice no predice la
+  convergencia en ningún sentido.
 - **El solver 2D de QSM** (`../tdv/wTDV_QSM_torch.py`) usa la red entera, `vn(z·α, z·α)/α`, sin
   `T` ni `λ`; `--channels 3` apila tres cortes como RGB, y `1` va corte a corte.
   `checkpoint_qsm_rapido.pth` es `runs/t1-rapido-30k/best.pth`.
@@ -220,7 +242,10 @@ Una por vez, contra la réplica a **iteración pareada** (`docs/resultados/t8del
 
 - **La de más valor para QSM: entrenar ciego al ruido**, con σ sorteado por parche (`U(0, 55)`,
   DnCNN-B): quitaría el reescalado de `evaluate.py --sigma-ref` y el `alpha` del solver ADMM-QSM.
-  En 3D ya es bandera (`--sigma-max 55`), sin medir; en 2D no está.
+  En 3D ya es bandera (`--sigma-max 55`), sin medir. En 2D, `ciego2d-35k` (una semilla, 35 000
+  iteraciones) bajó el número en QSM de 23.2 a 2.14, sin cruzar 2 y con el dominante todavía
+  negativo; en el ADMM converge, pero a 33.18 % contra 27.34 % del oficial. Falta el control con
+  σ = 25 y su calendario (RESULTADO, 2026-10-17).
 - **Baratas, con condiciones:** EMA (su estado viaja con el respaldo), `channels_last`, AdamW con
   `T` y `λ` fuera del weight decay (si no, los empuja a su pared; derivado, no medido).
 - **Cambian la receta:** cosine u otro calendario; DIV2K/Flickr2K; búsqueda con Optuna o Ray Tune

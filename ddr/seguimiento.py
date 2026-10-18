@@ -20,6 +20,7 @@ justo en un estado.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import math
 import netrc
@@ -31,6 +32,7 @@ import numpy as np
 
 __all__ = [
     "abre",
+    "falta_para_online",
     "registra",
     "registra_imagenes",
     "resumen",
@@ -74,6 +76,16 @@ def _wandb_tiene_credencial(wandb) -> bool:
         return bool(wandb.login(prompt=False, verify=False))
     except Exception:
         return False
+
+
+def falta_para_online() -> str | None:
+    """Qué falta para que `abre(modo="online")` abra, o None: wandb instalado y una credencial.
+    Sin importar wandb ni ir a la red, para poder preguntarlo antes de que el DataLoader forkee."""
+    if importlib.util.find_spec("wandb") is None:
+        return "wandb no está instalado (`uv sync` en la raíz del repo)"
+    if not _hay_credencial():
+        return "no hay credencial de W&B (`uv run wandb login`, o WANDB_API_KEY)"
+    return None
 
 
 def _modo(modo: str, previo: str | None) -> tuple[str, str]:

@@ -290,7 +290,8 @@ def punto_qsm3d(datos: dict[str, np.ndarray], lado: int = LADO_ESTABILIDAD, *,
 @contextlib.contextmanager
 def _sin_tf32(activo: bool) -> Iterator[None]:
     """Las convoluciones y los matmul en float32 IEEE mientras dura, y los flags como estaban al
-    salir. `rapido` prende TF32, que corta la mantisa a 10 bits; en CPU no existe y no se toca."""
+    salir. `intermedio` prende TF32, que corta la mantisa a 10 bits (`rapido` no: es bf16 con fp32
+    IEEE); en CPU no existe y no se toca."""
     if not activo:
         yield
         return
@@ -477,8 +478,10 @@ def lamina_denoising(limpia: Any, ruidosa: Any, salida: Any,
 # encadenados la amplificación se compone. `estabilidad` devuelve ese número, `paso`, en un punto.
 # En la bitácora (2026-10-12, «POR QUÉ los checkpoints propios rinden peor como prior PnP
 # de QSM») explicó por qué los checkpoints 2D propios no convergen como prior del ADMM: a σ = 25,
-# donde se entrenan, los cuatro dan 1.38–2.01; a la amplitud de uso de QSM, 0.99 el oficial y
-# 2.8–23.2 los propios, y el orden coincide con el de cuánto se degradan. El PSNR no los distingue.
+# donde se entrenan, los cuatro dan 1.38–2.01; a la amplitud de uso de QSM, el paso del oficial
+# expande ×1.27 (ρ de −0.28 a 1.03) y el de los propios ×1.77–23.9, con dos de los tres dominantes
+# negativos (docs/mediciones/espectro-extremos-qsm.txt; el «0.99 el oficial» que se citaba era la
+# potencia sin converger). El orden coincide con el de cuánto se degradan. El PSNR no los distingue.
 #   - El producto Hessiano-vector es exacto: la VJP por autograd de `R.grad`, que es el gradiente
 #     exacto de la energía escrito a mano (tests/test_gradient3d.py) y diferenciable (el
 #     entrenamiento retropropaga a través de él), así que J_grad(x)ᵀ·v = ∇²R(x)·v sin ε que

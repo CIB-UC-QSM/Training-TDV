@@ -115,6 +115,8 @@ uv run python datasets/cache_ldm100k3d.py cachea --lista lista_train_2000.txt --
 uv run python train3d.py --out runs/sonda --sonda-vram   # opcional: memoria y costo, sin entrenar
 uv run python train3d.py --out runs/humo --iterations 40 --eval-every 20 --seguimiento no   # ¿corre todo?
 uv run python train3d.py --out runs/prueba3d --iterations 400 --eval-every 200   # ¿aprende?
+uv run python train3d.py --out runs/sobreajuste --sobreajuste --lote 4 --hitos --iterations 1500 \
+    --eval-every 250 --mascara-cerebro --qsm-datos '' --estabilidad-lado 0   # ¿memoriza un lote?
 uv run python train3d.py --out runs/t1-3d
 ```
 
@@ -131,7 +133,20 @@ otra semilla.
 
 **Memoria.** `auto` elige el micro-lote (parches por backward; el lote se acumula) con un modelo del
 entrenamiento y un margen del 10 %, supuesto suficiente para la validación; el pico real queda en
-`estado.json`.
+`estado.json`. Sirve cualquier entero: el lote se parte en trozos casi iguales (32 con
+`--micro-lote 12` da 11 + 11 + 10). Lo que cuesta tiempo son las pasadas por iteración, no la
+memoria, y `auto` toma el que deja menos pasadas.
+
+**Prueba de sobreajuste.** `--sobreajuste` repite en cada iteración el mismo lote con el mismo
+ruido, sin disyuntor (con datos fijos, un rechazo se repetiría para siempre), y la validación
+agrega el PSNR de ese lote. En la 5070 Ti, 1 500 iteraciones (0.54 h) llevaron el lote a 33.29 dB
+mientras su validación en cerebro quedaba en 31.38; un control con datos frescos iba en 32.17 en
+la 1 000 (bitácora, 2026-10-16).
+
+**lr/2 por meseta.** `--meseta N` mira el NRMSE QSM de cada evaluación: si en N seguidas no baja del
+mejor, el lr se divide por 2 desde la iteración siguiente, hasta `--meseta-mitades` veces (5); la
+meseta siguiente corta la corrida, y `estado.json` lo dice (`corte`). Mientras el ADMM no
+converge el NRMSE salta mucho entre validaciones, y con N = 1 una sola peor ya parte el lr.
 
 ### Entrenar con un dataset propio
 
@@ -204,7 +219,9 @@ En 3D (prueba de 400):
   estabilidad < 2), tras revisar su `nrmse_final_pct` en `qsm.jsonl`: estable no implica
   convergente. El PSNR no lo sustituye: de cuatro redes 2D con 31.525–31.547 dB, sólo la oficial
   hizo converger el ADMM (n = 4;
-  [`qsm-prior-4corridas.txt`](docs/mediciones/qsm-prior-4corridas.txt)).
+  [`qsm-prior-4corridas.txt`](docs/mediciones/qsm-prior-4corridas.txt)). Y el número no lo
+  predice: una quinta, entrenada ciega al ruido, da 2.14 y converge, a 33.18 % de RMSE
+  ([`qsm-prior-ciego2d.txt`](docs/mediciones/qsm-prior-ciego2d.txt)).
 - **Cuándo relanzar.** Una ejecución muere si la pérdida o `T` se vuelven `NaN` o `T` llega a 0 (la
   salida es la entrada, 20.17 dB), y está perdida si el PSNR se hunde y no vuelve. Se relanza con
   otra semilla: el fallo es una tasa de la configuración. Son normales los rechazos y rebobinados
@@ -227,14 +244,16 @@ uv run python train3d.py --out runs/mio3d-lr2 $A --reanudar runs/mio3d/estado-01
 ```
 
 Sólo pueden cambiar las banderas de `LIBRES` en `train3d.py` (iteraciones, cadencias, memoria,
-seguimiento, QSM) y, en una rama (otro `--out`), `--hitos`; si otra difiere, `--reanudar` se niega
+seguimiento, QSM) y, en una rama (otro `--out`), el calendario: `--hitos`, `--meseta` y
+`--meseta-mitades`; si otra difiere, `--reanudar` se niega
 y la nombra. De una bandera repetida vale la última. Otro micro-lote cambia el orden de suma (el
 log lo avisa).
 
 ### Llevar el entrenamiento 3D a otra máquina
 
 1. **Requisitos del sistema.** Driver NVIDIA ≥ 580, el que pide el CUDA 13 de `uv.lock` (en
-   Blackwell, el paquete `-open`): con uno menor, torch no ve la GPU y el entrenamiento pasa a CPU.
+   Blackwell, el paquete `-open`): con uno menor, torch no ve la GPU y `train3d.py` sale con error
+   (en CPU corre sólo con `--sin-compilar`, para probar).
    `torch.compile` pide un compilador C (`sudo apt install build-essential`).
 2. **Código y entorno.** `uv sync` instala el Python 3.13 que fija `.python-version`, y no conviene
    forzar otro.
@@ -257,31 +276,40 @@ log lo avisa).
 4. **Seguimiento.** Sin credencial, `--seguimiento auto` (el default) registra en `<out>/wandb/`, y
    un fallo de W&B no detiene el entrenamiento. `uv run wandb login` deja la credencial en
    `~/.netrc`, que ve también una ejecución lanzada como servicio (una `WANDB_API_KEY` exportada en
-   la terminal, no); con `--seguimiento online`, el log dice al arrancar `seguimiento: W&B online`.
-   Para que otros sigan el proyecto `training-tdv3d`, se hace público o se comparte desde un equipo.
+   la terminal, no); con `--seguimiento online`, el log dice al arrancar `seguimiento: W&B online`,
+   y si falta wandb o la credencial, o W&B no abre, sale con error antes de entrenar.
+   El proyecto `training-tdv3d` va público (decisión del autor, 2026-10-18), para que el supervisor
+   lo siga con el link: lo crea la primera corrida online, y la visibilidad se cambia a «Public» en
+   la configuración del proyecto en W&B.
 5. **Comprobaciones.** Los tests, la sonda y la prueba de 40 iteraciones de «Entrenar en 3D». La
-   sonda da los s por parche (el s/it es ~32 veces eso): en 96 GB, `auto` elige micro-lote 16
+   sonda mide los micro-lotes que cambian las pasadas (1–8, 11, 16 y 32) y da los s por parche (el
+   s/it es ~32 veces eso): en 96 GB, `auto` elige micro-lote 16
    (~57 GiB predichos), y si 16 no baja claramente el tiempo por parche frente a 8, se pasa
    `--micro-lote 8`. La prueba da el costo de una validación.
-6. **Iteraciones, calendario y lanzamiento.** N ≈ horas disponibles · 3 600 / (s/it), descontada
-   una validación cada 2 500 iteraciones. El lr se divide a la mitad tres veces en las últimas
-   15 000. Como servicio se usa `.venv/bin/python` y no `uv run`: el `PATH` de una unidad de
-   systemd no incluye `~/.local/bin`, donde el instalador deja `uv`.
+6. **Iteraciones, calendario y lanzamiento.** Decisión del autor (2026-10-18): el NRMSE QSM decide
+   el lr. `--hitos` sola deja el lr constante, y `--meseta 2` lo divide a la mitad cada vez que el
+   NRMSE no baja del mejor en dos evaluaciones seguidas, hasta 5 veces; la meseta siguiente corta
+   la corrida («lr/2 por meseta» en «Entrenar en 3D»). `--iterations 100000` es sólo el techo: la
+   corrida puede terminar antes por sí sola. Como servicio se usa `.venv/bin/python` y no `uv run`:
+   el `PATH` de una unidad de systemd no incluye `~/.local/bin`, donde el instalador deja `uv`.
 
    ```bash
-   N=75000   # el que dé la cuenta
    sudo loginctl enable-linger $USER   # una vez: la unidad sigue al cerrar la sesión ssh
    systemd-run --user --unit tdv-3d-largo -p WorkingDirectory=$PWD bash -c \
-       ".venv/bin/python -u train3d.py --out runs/3d-largo --iterations $N \
-        --hitos $((N-15000)) $((N-10000)) $((N-5000)) --mascara-cerebro --seguimiento online \
-        --eval-every 2500 --guardar-cada 2500 > runs/3d-largo.log 2>&1"
+       ".venv/bin/python -u train3d.py --out runs/3d-largo --iterations 100000 --hitos --meseta 2 \
+        --mascara-cerebro --seguimiento online --eval-every 2500 --guardar-cada 2500 \
+        > runs/3d-largo.log 2>&1"
    ```
 
-   Así cada validación QSM deja su `estado-<it>.pth`, y si `best_qsm.pth` no convence se puede
-   elegir otro a mano; cada uno ocupa ~51 MB en la 40 000 (derivado, bitácora 2026-10-13), y
-   `--guardar-cada` no toca la aritmética. Si el s/it real difiere del medido, los hitos se corrigen
-   con una rama («Reanudar») desde un estado anterior al primero. Tras un corte, el mismo comando
-   con `--reanudar runs/3d-largo/estado-<it>.pth`, y `>>` para no pisar el log.
+   Con una evaluación cada 2 500 iteraciones, dos sin mejora son 5 000 de meseta. Cada validación
+   QSM deja su `estado-<it>.pth`, y si `best_qsm.pth` no convence se puede elegir otro a mano; cada
+   uno ocupa ~51 MB en la 40 000 (derivado, bitácora 2026-10-13), y `--guardar-cada` no toca la
+   aritmética. Tras un corte, el mismo comando con `--reanudar runs/3d-largo/estado-<it>.pth`, y
+   `>>` para no pisar el log: la meseta sigue con su cuenta y sus mitades, que viajan en el estado.
+
+   La alternativa son hitos fijos, `--hitos N−15000 N−10000 N−5000`, con N ≈ horas disponibles ·
+   3 600 / (s/it), descontada una validación cada 2 500; con hitos y meseta a la vez, las mitades
+   se suman.
 
 ### Modos y costo
 
@@ -297,8 +325,10 @@ La receta 2D completa tardó 12.6 h en `rapido` en una RTX 5070 Ti.
 La arquitectura, el lr inicial, β y S no tienen bandera: están al principio de `train.py`,
 justificadas en sus notas finales. `--sigma` (25, en 0–255) fija también la σ de validación. En 3D,
 `--sigma-max` > 0 sortea σ ~ U(`--sigma-min`, `--sigma-max`) por parche (ruido ciego), y
-`--eval-qsm-cada N` limita QSM y estabilidad a las validaciones múltiplo de N (y la última). El
-resto, con sus valores por defecto, está en `--help`.
+`--eval-qsm-cada N` limita QSM y estabilidad a las validaciones múltiplo de N (y la última).
+`--meseta`, `--meseta-mitades` y `--sobreajuste` vienen apagadas (arriba, «Entrenar en 3D»), y
+`train.py` tiene también `--sigma-min/--sigma-max`. El resto, con sus valores por defecto, está en
+`--help`.
 
 ## Diferencias entre 2D y 3D
 

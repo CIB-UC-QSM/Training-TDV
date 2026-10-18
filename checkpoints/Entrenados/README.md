@@ -44,3 +44,40 @@ sobre CBSD68 (68 imágenes de `val`).
   Adam en `last.pth` tienen `weight_decay = 0`: Adam no lo aplicó.
 - Cargan con `evaluate.load_vnet`, igual que los oficiales:
   `uv run python evaluate.py checkpoints/Entrenados/<archivo> --file-list datasets/bsds500/cbsd68.txt`.
+
+## `ciego2d-35k.pth`: ruido ciego y calendario corto
+
+Misma arquitectura, datos, batch y Adam que arriba. Cambian el ruido de entrenamiento y el
+calendario, por eso no va en las columnas de arriba.
+
+| | `ciego2d-35k.pth` |
+|---|---|
+| origen | `runs/ciego2d-35k/last.pth`, el checkpoint final del pre-registro. `best.pth` (la 34 000) da 31.42811 dB contra 31.42800: la diferencia es ruido |
+| log | `salida.log`, `history.json`, `traza.npy`; el código, congelado en `runs/ciego2d-35k/codigo` |
+| modo | `referencia`: fp32 IEEE, determinista, sin `cudnn.benchmark`; 1 GPU, 2×16 |
+| semilla | 1 |
+| `T_init` / `λ_init` | 0.10119 (8 δ) / 0.1 |
+| ruido | σ ~ U(0, 55) por parche (`--sigma-min 0 --sigma-max 55`); se evalúa a σ = 25 |
+| calendario del lr | 4·10⁻⁴, a la mitad en la 25 000 y en la 30 000 (25k + 5k + 5k) |
+| disyuntor / clip | disyuntor v2, igual que arriba. Sin clip |
+| iteraciones | 35 000, terminada |
+| iteración del checkpoint | 35 000 |
+| horas de GPU | 13.09 h |
+| lotes rechazados / rebobinados | 202 / 7. Con lo deshecho por los rebobinados, 866 iteraciones (2.47 %), todas antes de la 20 745 |
+| PSNR en CBSD68, σ = 25 | 31.428 dB (evaluación de `train.py` en la 35 000) |
+| PSNR, σ = 15 y 50 | sin medir. En un modelo ciego se miden sin el reescalado |
+| `T` / `λ` del checkpoint | 0.10002 (7.91 δ) / 0.02519 |
+
+- **El código que lo entrenó no está en esta rama.** La bandera `--sigma-min/--sigma-max` de
+  `train.py` está en el commit `52ac144` de `worktree-pruebas-3d`, junto con su pre-registro y su
+  resultado en la bitácora (2026-10-16 y 2026-10-17). Hasta que se integre, para reentrenarlo hace
+  falta la copia de `runs/ciego2d-35k/codigo`.
+- **En QSM** (medido el 2026-10-17, `docs/mediciones/qsm-prior-ciego2d.txt` de esa rama):
+  (T/S)·λ_max = 2.1377 en el punto del solver, con el dominante **negativo**. El ADMM converge en 33
+  iteraciones, con 33.18 % de RMSE contra COSMOS. El oficial da 27.34 %; los tres de σ = 25,
+  28.4–28.5 % sin converger.
+- **Los dos extremos y la fuerza del prior** (medido el 2026-10-17,
+  `docs/mediciones/espectro-extremos-qsm.txt` y `docs/mediciones/fuerza-prior-ciego2d.txt`). En el
+  punto QSM, ρ va de −2.14 a 1.87 y el paso expande ×3.13 por la curvatura negativa; el oficial,
+  ×1.27. Mueve el dato 0.36 contra 0.53 del oficial, y esa fracción casi no cambia con la amplitud
+  (0.35–0.44 entre std 0.015 y 0.25).
