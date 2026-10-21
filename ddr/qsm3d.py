@@ -7,6 +7,10 @@ denoisers: k = 3 es su pseudo-3D (la red 2D en los tres ejes, un z_i y un dual s
 es el 3D, una red sobre el volumen entero. Lo que sigue la corrida es el NRMSE (%) contra
 `chi_cosmos` dentro de su máscara, el `rmse` de `../tdv/ddr/utils.py:91`.
 
+Con las máscaras del autor (las de su solver): la entrada y la salida de cada denoiser van por la
+máscara del cerebro en cada iteración, z_i = M·D_i(alpha·M·(chi + s_i))/alpha, y el chi final es
+M·chi. Afuera no hay datos (W² = 0) y el TDV amplifica.
+
 Ojo con la escala: la red se entrenó en [0, 1] y chi está en ppm (±0.1). `alpha` lleva la
 desviación estándar de la primera reconstrucción a TARGET_STD antes de cada denoiser y la deshace a
 la salida: es la calibración del autor, que existe porque la red conoce un solo sigma.
@@ -52,15 +56,16 @@ __all__ = [
 Denoiser = Callable[[torch.Tensor], torch.Tensor]
 
 # --- PROTOCOLO DEL AUTOR ---------------------------------------------------------------------
-# Todos de `../tdv/wTDV_QSM_torch_3d.py`, con su línea. Con ellos y su red 2D color en los tres
-# ejes el autor reporta 26.89 % de NRMSE (`../tdv/README.md`, «Resultados», «Script pseudo-3D»).
-# No tocar: es la referencia.
-MU = 0.008                   # :27, peso del split del prior, "según ... el Grid Search"
-MU2 = 1.0                    # :28, peso del split del término de datos
-TARGET_STD = 0.06            # :159, desviación de alpha·chi_0 en la máscara, "según Grid Search"
-MAX_ITER = 100               # :23
-TOL = 1.05                   # :24 y :169: por debajo, el ADMM se da por convergido
-CORTE = 1.4                  # :155: convergido, se corta cuando el update vuelve a pasar de esto
+# Todos de `../tdv/wTDV_QSM_torch_3d.py` (con máscaras), por línea. Con ellos, las máscaras y su red
+# 2D color en los tres ejes el autor reporta 25.94 % de NRMSE en las 100 iteraciones, sin corte
+# (`../tdv/README.md`, «Script pseudo-3D»; sin máscaras eran 26.89 % en 26). No tocar: es la
+# referencia.
+MU = 0.008                   # :25, el `mu` del oficial en PARAMS, "del grid search del 2D"
+MU2 = 1.0                    # :52, peso del split del término de datos
+TARGET_STD = 0.06            # :25, desviación de alpha·chi_0 en la máscara, la del oficial
+MAX_ITER = 100               # :46
+TOL = 1.15                   # :47 y :193: por debajo, el ADMM se da por convergido
+CORTE = 1.30                 # :48 y :179 (`finUpdate`): convergido, corta si el update lo pasa
 
 # --- MÁSCARA DEL AUTOR -----------------------------------------------------------------------
 # El skull-stripping de `wTDV_QSM_torch_3d.py:36-45`, con sus números.
@@ -71,9 +76,9 @@ SIGMA_SUAVIZADO = 1.0        # :45, gaussiana sobre la máscara binaria...
 UMBRAL_SUAVIZADO = 0.5       # :45, ...umbralizada otra vez: la "máscara dura"
 
 # --- ESTABILIDAD -----------------------------------------------------------------------------
-# Los dos primeros, los de `scripts/diag_qsm_estabilidad.py` (local; «el script 2D»), que midió el
-# número en los checkpoints 2D: con ellos, lo de acá se compara con lo de allá. El porqué de cada
-# uno, en el bloque final.
+# Los dos primeros, los del script que midió el número en los checkpoints 2D («el script 2D»): con
+# ellos, lo de acá se compara con lo de allá. El porqué de cada uno, en docs/porque-del-codigo.md,
+# ESTABILIDAD (de ddr/qsm3d.py).
 ITERS_ESTABILIDAD = 40       # su ITERS: productos Hessiano-vector de la iteración de potencia
 SEMILLA_ESTABILIDAD = 11     # su generador del vector de arranque
 UMBRAL_ESTABILIDAD = 2.0     # derivado: |1 − (T/S)·lambda| < 1 sólo si 0 < (T/S)·lambda < 2
@@ -153,26 +158,40 @@ def nrmse_pct(pred: np.ndarray, gt: np.ndarray, mascara: np.ndarray | None = Non
 
 def admm_wtdv(denoisers: Sequence[Denoiser], datos: dict[str, np.ndarray], *, mu: float = MU,
               mu2: float = MU2, target_std: float = TARGET_STD, max_iter: int = MAX_ITER,
-              tol: float = TOL, corte: float = CORTE, device: str | torch.device,
+              tol: float = TOL, corte: float = CORTE, subidas_para_cortar: int = 0,
+              device: str | torch.device,
               al_iterar: Callable[[int, float, float], None] | None = None) -> dict[str, Any]:
-    """El bucle de `wTDV_QSM_torch_3d.py:142-202` con k = len(denoisers) splits del prior.
+    """El bucle de `wTDV_QSM_torch_3d.py:166-230` (con máscaras) con k = len(denoisers) splits del
+    prior.
 
     Cada denoiser es v -> z sobre un volumen float32 `[Z, Y, X]` en `device`; el escalado por
-    alpha va acá, como `process_axis` lo hace por fuera de la red: z_i = D_i(alpha·v_i)/alpha. El
+    alpha va acá, como `process_axis` lo hace por fuera de la red, y la máscara M =
+    `datos["mascara"]` a la entrada y a la salida (:200-214): z_i = M·D_i(alpha·M·v_i)/alpha. El
     orden de `denoisers` es el de la suma del numerador: el (x, y, z) del script es
     `[perm (0,1,2), perm (1,0,2), perm (2,0,1)]`.
 
-    `nrmse` y `x_update` tienen una entrada por x-update, índice t como el `Iter` del script; la
-    última es la de `chi`, que en un corte el script no imprime. `iteraciones` = len(nrmse), el
-    `iter` = t+1 que guarda el script (:213). `motivo`: "corte", "max_iter" o "no_finito".
-    `al_iterar(t, x_update, nrmse)`, si se da, se llama en cada x-update. Sin `chi` en `datos`,
-    el NRMSE es NaN.
+    `chi` es M·chi, el mapa final del script (:236). `nrmse` y `x_update` tienen una entrada por
+    x-update, índice t como el `Iter` del script; la última es la de `chi`, que en un corte el
+    script no imprime. El NRMSE de cada iteración se mide sobre M·chi, el mismo mapa que el final
+    (el script imprime las iteraciones sin M), y el update sobre el volumen entero, como el
+    script. `iteraciones` = len(nrmse), el `iter` = t+1 que guarda el script. `motivo`: "corte",
+    "max_iter", "no_finito" o "empeora". `al_iterar(t, x_update, nrmse)`, si se da, se llama en
+    cada x-update. Sin `chi` en `datos`, el NRMSE es NaN.
+
+    Con `subidas_para_cortar` = n > 0, el ADMM para cuando el NRMSE sube n iteraciones seguidas
+    (motivo "empeora") y, pare como pare (salvo con "no_finito"), devuelve el chi de menor NRMSE
+    que vio: `nrmse_final` es el mínimo de lo recorrido. La trayectoria guarda también los NRMSE
+    que hicieron parar. Mira la referencia: sirve para comparar checkpoints, no para un sujeto
+    sin chi.
     """
+    if subidas_para_cortar and datos.get("chi") is None:
+        raise ValueError("subidas_para_cortar mira el NRMSE: necesita `chi` en `datos`")
     t0 = time.perf_counter()
     k = len(denoisers)
     kernel, K2, weight, Wy, mask = (torch.from_numpy(np.ascontiguousarray(datos[c])).to(device)
                                     for c in ("kernel", "K2", "W2", "Wy", "mascara"))
     chi_gt, mascara_eval = datos.get("chi"), datos.get("mascara_eval")
+    mask_f = mask.float()
 
     N = kernel.shape
     z = [torch.zeros(N, dtype=torch.float32, device=device) for _ in range(k)]
@@ -186,6 +205,7 @@ def admm_wtdv(denoisers: Sequence[Denoiser], datos: dict[str, np.ndarray], *, mu
     nrmse: list[float] = []
     x_update: list[float] = []
     converged, motivo, alpha = False, "max_iter", 1.0
+    subidas, mejor_nrmse, mejor_qsm = 0, math.inf, None   # para `subidas_para_cortar`
     for t in range(max_iter):
         qsm_old = qsm.clone()
 
@@ -202,15 +222,24 @@ def admm_wtdv(denoisers: Sequence[Denoiser], datos: dict[str, np.ndarray], *, mu
             qsm_std = torch.std(qsm[mask])
             alpha = target_std / qsm_std.item() if qsm_std.item() > 0 else 1.0
 
-        # Sin enmascarar, como :165: es el criterio de parada del ADMM, no una métrica.
+        # Sin enmascarar, como :189: es el criterio de parada del ADMM, no una métrica.
         x_update.append((100 * torch.sqrt(torch.mean((qsm - qsm_old) ** 2))
                          / torch.sqrt(torch.mean(qsm ** 2))).item())
-        nrmse.append(nrmse_pct(qsm.cpu().numpy(), chi_gt, mascara_eval)
+        # Sobre M·chi, el mapa que se devuelve (:236).
+        nrmse.append(nrmse_pct((qsm * mask_f).cpu().numpy(), chi_gt, mascara_eval)
                      if chi_gt is not None else math.nan)
         if al_iterar is not None:
             al_iterar(t, x_update[-1], nrmse[-1])
 
-        # El corte de :155 mira el update de la iteración ANTERIOR: el chi recién calculado es el
+        # La parada por NRMSE: guarda el mejor chi y cuenta las subidas seguidas.
+        if subidas_para_cortar:
+            subidas = subidas + 1 if t > 0 and nrmse[-1] > nrmse[-2] else 0
+            if nrmse[-1] < mejor_nrmse:
+                mejor_nrmse, mejor_qsm = nrmse[-1], qsm.clone()
+            if subidas >= subidas_para_cortar:
+                motivo = "empeora"
+                break
+        # El corte de :179 mira el update de la iteración ANTERIOR: el chi recién calculado es el
         # final aunque su update no haya decidido nada.
         if converged and x_update[-2] > corte:
             motivo = "corte"
@@ -224,9 +253,9 @@ def admm_wtdv(denoisers: Sequence[Denoiser], datos: dict[str, np.ndarray], *, mu
 
         FhDFx = torch.real(torch.fft.ifftn(kernel * torch.fft.fftn(qsm))).to(torch.float32)
 
-        # --- PASO PROXIMAL: un denoiser por split --------------------------------------------
+        # --- PASO PROXIMAL: un denoiser por split, con la entrada y la salida en M (:200-214) --
         for i, denoiser in enumerate(denoisers):
-            z[i] = denoiser(alpha * (qsm + s[i])) / alpha
+            z[i] = denoiser(alpha * ((qsm + s[i]) * mask_f)) / alpha * mask_f
         for i in range(k):
             s[i] += qsm - z[i]
 
@@ -236,9 +265,12 @@ def admm_wtdv(denoisers: Sequence[Denoiser], datos: dict[str, np.ndarray], *, mu
 
     finitos = [(v, t) for t, v in enumerate(nrmse) if math.isfinite(v)]
     nrmse_min, it_min = min(finitos) if finitos else (math.nan, -1)
+    nrmse_final = nrmse[-1]
+    if mejor_qsm is not None and motivo != "no_finito":
+        qsm, nrmse_final = mejor_qsm, mejor_nrmse
     return {
-        "chi": qsm.cpu().numpy(), "nrmse": nrmse, "x_update": x_update, "alpha": alpha,
-        "iteraciones": len(nrmse), "motivo": motivo, "nrmse_final": nrmse[-1],
+        "chi": (qsm * mask_f).cpu().numpy(), "nrmse": nrmse, "x_update": x_update, "alpha": alpha,
+        "iteraciones": len(nrmse), "motivo": motivo, "nrmse_final": nrmse_final,
         "nrmse_min": nrmse_min, "it_min": it_min, "k": k,
         "segundos": time.perf_counter() - t0,
     }
@@ -261,9 +293,9 @@ def denoiser_3d(modelo: torch.nn.Module, *, autocast_dtype: torch.dtype | None =
 def punto_qsm3d(datos: dict[str, np.ndarray], lado: int = LADO_ESTABILIDAD, *,
                 device: str | torch.device = "cpu", mu: float = MU, mu2: float = MU2,
                 target_std: float = TARGET_STD) -> np.ndarray:
-    """La entrada del PRIMER denoiser de `admm_wtdv` con k = 1, alpha·chi_0, recortada a un cubo
-    `lado`^3 centrado en la caja de `datos["mascara"]` (la ventana de `VolumeDataset3D`), en
-    float32 y en numpy.
+    """La entrada del PRIMER denoiser de `admm_wtdv` con k = 1, alpha·M·chi_0 (cero fuera de la
+    máscara M, como la ve el denoiser), recortada a un cubo `lado`^3 centrado en la caja de
+    `datos["mascara"]` (la ventana de `VolumeDataset3D`), en float32 y en numpy.
 
     No se recalcula: se corre `admm_wtdv` una iteración con un denoiser que guarda lo que recibe,
     así que es la del ADMM por construcción y no puede divergir de ella. chi_0 sale sólo del
@@ -318,7 +350,8 @@ def estabilidad(modelo: torch.nn.Module, x: torch.Tensor | np.ndarray, *,
     de arranque sale de uno propio, con `semilla`.
 
     lambda_max es ‖Hv‖ del último v, como en el script 2D: el MÓDULO del autovalor dominante,
-    al que la potencia converge desde abajo. `rayleigh`, vᵀHv, sólo da el signo (bloque final).
+    al que la potencia converge desde abajo. `rayleigh`, vᵀHv, sólo da el signo
+    (docs/porque-del-codigo.md, ESTABILIDAD de ddr/qsm3d.py).
     Devuelve lambda_max, rayleigh, paso, T, S, iteraciones, cambio_relativo (|Δlambda|/lambda en
     la última iteración: la convergencia, que subestima el error) y segundos.
     """
@@ -437,96 +470,27 @@ def lamina_denoising(limpia: Any, ruidosa: Any, salida: Any,
 # --- PROTOCOLO DEL AUTOR ---------------------------------------------------------------------
 # El ADMM parte chi en z2 = D chi (datos) y en k copias z_i = chi (prior), con duales escalados:
 #   chi = F⁻¹[(mu2·D·F(z2 − s2) + (mu/k)·Σ F(z_i − s_i)) / (mu2·D² + mu)]       (D real)
-#   z_i = D_i(alpha·(chi + s_i))/alpha,                     s_i += chi − z_i
+#   z_i = M·D_i(alpha·M·(chi + s_i))/alpha,                 s_i += chi − z_i
 #   z2  = (W²·phase + mu2·(D chi + s2))/(W² + mu2),         s2 += D chi − z2
+# y devuelve M·chi. M es la máscara dura de alpha (`mascara`, `refined_mask` en :69), no la del
+# NRMSE (chi_cosmos != 0). Las máscaras son las del solver de `../tdv` (2026-10-18), iguales en su
+# 2D y su 3D. Con la entrada en M, el prox no depende de lo de afuera, y con la salida en M el
+# prior vale 0 donde no hay datos (W² = 0), que es donde el TDV amplifica (comentarios de :199 y
+# :213).
 # Cada split del prior pesa mu/k, así que juntos pesan mu: k = 1 y k = 3 con tres denoisers
 # iguales son el mismo ADMM salvo redondeo (2.5e-8 sobre un chi de 0.1, medido en el sintético
-# del test).
+# del test, antes de las máscaras).
 # `alpha` se fija en t = 0 con chi_0, que sale sólo del término de datos (los z_i valen 0): no
-# depende de la red. En COSMOS da 4.8591 en CPU, el mismo que el log del autor en GPU (:237).
-# El update relativo baja, toca un mínimo y vuelve a subir (comentario de :154): el ADMM se da por
-# convergido al bajar de TOL y corta en la primera iteración cuyo update ANTERIOR pasa de CORTE.
-# El chi final es el de esa iteración. Las «25 iteraciones» de `../tdv/README.md` son la última
-# línea que imprime el script; lo que guarda es t+1 (`iter`, :213), que acá es `iteraciones`.
-
----------------------------------------------------------------------------------------------------
-
-# --- REPRODUCCIÓN ----------------------------------------------------------------------------
-# `admm_wtdv` con k = 3, la red 2D color del autor y su `process_axis`, en CPU float32 y sin
-# `torch.compile`: 26.8898 % de NRMSE con corte en t = 26 (27 x-updates), contra 26.89 % y el
-# mismo corte del autor en GPU con bf16. Iteración a iteración el NRMSE se separa de su log a lo
-# sumo 0.0026 pp y el update 0.0094 (2026-10-12, docs/mediciones/qsm-eval-cosmos.txt). Sobre un
-# sintético, contra el bucle del script transcripto, es igual bit a bit (tests/test_qsm3d.py).
-
----------------------------------------------------------------------------------------------------
-
-# --- COSTO DEL 3D ----------------------------------------------------------------------------
-# `denoiser_3d` con el VNet3D de la corrida de humo (TDV33 3D, 32 features, S = 10) sobre los
-# 160^3 de COSMOS de una vez, en CPU float32 con 8 hilos de una CPU compartida: 466 y 478 s por
-# iteración y 7.77 GB de pico de RSS, contra 0.63 GB antes del ADMM (2026-10-12,
-# docs/mediciones/qsm-eval-cosmos.txt). Es una cota aproximada de lo que pide en GPU en fp32; en
-# bf16, menos. Sin medir en GPU. Cada iteración corre un denoiser, y una red que no converge corre
-# MAX_ITER = 100.
-
----------------------------------------------------------------------------------------------------
-
-# --- ESTABILIDAD -----------------------------------------------------------------------------
-# Cada paso del esquema desenrollado es descenso de gradiente EXPLÍCITO sobre T·R,
-#   x ← x − (T/S)·∇R(x) − (λ/S)(x − z),
-# y su jacobiano en la parte de R es I − (T/S)·∇²R: el paso amplifica en la dirección de un
-# autovalor μ de ∇²R si |1 − (T/S)·μ| > 1, o sea si (T/S)·μ > 2 o μ < 0. Con S = 10 pasos
-# encadenados la amplificación se compone. `estabilidad` devuelve ese número, `paso`, en un punto.
-# En la bitácora (2026-10-12, «POR QUÉ los checkpoints propios rinden peor como prior PnP
-# de QSM») explicó por qué los checkpoints 2D propios no convergen como prior del ADMM: a σ = 25,
-# donde se entrenan, los cuatro dan 1.38–2.01; a la amplitud de uso de QSM, el paso del oficial
-# expande ×1.27 (ρ de −0.28 a 1.03) y el de los propios ×1.77–23.9, con dos de los tres dominantes
-# negativos (docs/mediciones/espectro-extremos-qsm.txt; el «0.99 el oficial» que se citaba era la
-# potencia sin converger). El orden coincide con el de cuánto se degradan. El PSNR no los distingue.
-#   - El producto Hessiano-vector es exacto: la VJP por autograd de `R.grad`, que es el gradiente
-#     exacto de la energía escrito a mano (tests/test_gradient3d.py) y diferenciable (el
-#     entrenamiento retropropaga a través de él), así que J_grad(x)ᵀ·v = ∇²R(x)·v sin ε que
-#     elegir. El script 2D usaba diferencias centradas con ε = 1e-5·mean|x| en float64; en
-#     float32 la cancelación deja ~2 de 7 dígitos (ulp/ε ≈ 6e-3), y en bf16 ninguno (la ulp, 4e-3,
-#     pasa a ε): derivado, no medido. El grafo de `R.grad`
-#     se arma una vez y se recorre ITERS_ESTABILIDAD veces (`retain_graph`): cada producto cuesta
-#     un backward, no un forward más un backward.
-#   - En el dtype de los pesos, sin autocast y sin TF32 (`_sin_tf32` lo apaga mientras dura y deja
-#     los flags como estaban): float32 IEEE en la corrida, float64 en los tests. Llama al método
-#     de la CLASE (`type(R).grad`), no al atributo: train3d.py pone en la instancia el `R.grad`
-#     compilado con dynamic=False, que sumaría una entrada de dynamo por cada forma nueva y
-#     correría en bf16 bajo el autocast de `rapido`. Con el de la clase no suma ninguna, y el
-#     compilado da lo mismo bit a bit después (docs/mediciones/dynamo-estabilidad.txt, CPU).
-#   - No toca el modelo: `autograd.grad` sólo respecto de x no escribe ningún `.grad`, y el vector
-#     de arranque sale de un generador propio en CPU (la misma secuencia en CPU y en GPU), no del
-#     global. Test: con los `.grad` de una iteración puestos, pesos, `.grad` y generador global
-#     quedan bit a bit; dentro de un autocast bf16, el resultado es el mismo bit a bit.
-#   - lambda_max es ‖Hv‖ del último v (unitario), como en el script 2D: converge desde abajo
-#     al MÓDULO del autovalor dominante, max|μ|, que nunca es menor que el mayor positivo y es él
-#     si el dominante es positivo. Si `paso` pasa de 2, el paso amplifica cualquiera sea el signo:
-#     con μ ≤ −2S/T, |1 − (T/S)·μ| ≥ 3. `rayleigh`, vᵀHv, da el signo (≈ −lambda_max si el
-#     dominante es negativo; con pesos al azar pasa: test, semilla 0, −5.35), pero no es el número:
-#     con dos dominantes de signo opuesto y módulo parecido no converge a ninguno (test, semilla 3
-#     a amplitud 0.1: 0.57 con 200 iteraciones contra ±2.67, y ‖Hv‖ queda entre los dos módulos).
-#     `cambio_relativo` es |Δlambda|/lambda entre las dos últimas iteraciones: el error es
-#     ~ cambio·r²/(1 − r²), con r = |μ₂|/|μ₁|, y con r = 0.98 cuarenta iteraciones dejan lambda
-#     0.9 % abajo con un cambio de 2.2e-4 (red de juguete, docs/mediciones/
-#     convergencia-estabilidad.txt): un cambio grande dice que el número es una cota inferior de
-#     max|μ|, y uno chico no lo garantiza.
-#   - ITERS_ESTABILIDAD = 40 y SEMILLA_ESTABILIDAD = 11 son los de
-#     `scripts/diag_qsm_estabilidad.py`, para que los números se comparen.
-#     UMBRAL_ESTABILIDAD = 2 es la cuenta de arriba.
-# Test contra la Hessiana de la ENERGÍA armada entera con autograd en una red de 4 features sobre
-# 6^3, en float64: con 200 iteraciones la potencia da el módulo del autovalor dominante de
-# `eigvalsh` a 1e-15 relativo, y `rayleigh` su signo, con un dominante positivo y con uno negativo;
-# en el empate de signos opuestos, lambda_max queda entre los dos módulos (tests/test_qsm3d.py).
-# `punto_qsm3d` es la entrada del primer denoiser del ADMM 3D (k = 1): alpha·chi_0, con chi_0 la
-# primera actualización de chi (z = s = 0, así que sólo el término de datos) y alpha =
-# TARGET_STD/std(chi_0 en la máscara), con la std de `torch.std` (n − 1). No se recalcula: se
-# corre `admm_wtdv` una iteración con un denoiser que guarda su entrada, así que no puede divergir
-# del ADMM (test: bit a bit igual a la primera entrada de un ADMM de cuatro iteraciones, y a 1e-5
-# de la fórmula cerrada en float64). El script 2D armaba otra cosa: tres cortes axiales
-# adyacentes como RGB de 96^2, con la misma fórmula (mu2 = 1) y `np.std` (n). Acá es un cubo de
-# LADO_ESTABILIDAD^3 centrado en la caja de la máscara refinada, con la ventana de los recortes de
-# evaluación (`_recorte_centrado` de `ddr/data3d.py`): en COSMOS, la ventana [32:128, 34:130,
-# 26:122] de los 160^3, con el 77.6 % de sus vóxeles en la máscara (medido el 2026-10-12).
+# depende de la red. En COSMOS da 4.8591, el mismo que los logs del autor.
+# El update relativo, sobre el volumen entero, baja, toca un mínimo y vuelve a subir: el ADMM se da
+# por convergido al bajar de TOL y corta en la primera iteración cuyo update ANTERIOR pasa de
+# CORTE. El chi final es el de esa iteración. TOL = 1.15 y CORTE = 1.30 los ajustó el autor con la
+# red 2D oficial y sólo la salida enmascarada (corte en la 38, 25.94 %); con la entrada
+# también en M el update de esa red baja sólo a 1.24 y no corta (`../tdv/README.md`). Para otra red
+# los umbrales cambian: en el 2D, el grid del autor eligió tolUpdate de 0.3 a 1.5 para las cinco
+# redes (`../tdv/wTDV_QSM_torch.py:24-28`). Los de la red 3D se calibran con un grid después del
+# entrenamiento (pendiente); mientras, la corrida no depende de que corte: `best_qsm.pth` y
+# --meseta miran el NRMSE mínimo de la trayectoria (docs/porque-del-codigo.md, EVALUACIÓN QSM y
+# MESETA de train3d.py).
+# El resto de las notas de este archivo, en docs/porque-del-codigo.md, «## ddr/qsm3d.py».
 '''

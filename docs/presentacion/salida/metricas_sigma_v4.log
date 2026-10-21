@@ -1,3 +1,0 @@
-  v4        σ=15  PSNR 34.060  NRMSE 4.46 %  SNR in 17.98 → out 27.43 dB
-  v4        σ=25  PSNR 31.478  NRMSE 6.05 %  SNR in 13.54 → out 24.85 dB
-  v4        σ=50  PSNR 28.186  NRMSE 8.89 %  SNR in 7.52 → out 21.55 dB

@@ -1,10 +1,9 @@
 """El disyuntor de lotes: que rechace el pico sin tocar la corrida sana.
 
 Como `tests/test_recipe.py`, estos tests verifican **decisiones**, no el modelo. Cada número del
-disyuntor está calibrado sobre las 205 829 iteraciones sanas de las 81 corridas del repo
-(`scripts/calibrar_disyuntor.py`) más el post-mortem de `runs/disyuntor-100k`. Sin esta guardia,
-aflojar la razón o subir la cota pasaría desapercibido y volvería a dejar entrar el lote que mete
-la corrida en la cuenca mala.
+disyuntor está calibrado sobre las 205 829 iteraciones sanas de 81 corridas 2D de `runs/` más el
+post-mortem de `disyuntor-100k`. Sin esta guardia, aflojar la razón o subir la
+cota pasaría desapercibido y volvería a dejar entrar el lote que mete la corrida en la cuenca mala.
 """
 
 import copy
@@ -35,7 +34,7 @@ def corre(normas, ratio=train.GUARD_RATIO, ventana=train.GUARD_VENTANA, amp_max=
 
 def test_la_razon_queda_debajo_de_la_banda_de_entrada():
     """La razón ya NO sale de `beta2`. `1/sqrt(1-beta2) = 31.62` es el pico que duplica `v`, y con
-    ése `runs/disyuntor-100k` entró a la cuenca mala: los tres lotes que la metieron iban a 8.97,
+    ése `disyuntor-100k` entró a la cuenca mala: los tres lotes que la metieron iban a 8.97,
     7.94 y 7.70 veces la mediana, y los aceptó a los tres. La razón tiene que quedar debajo."""
     assert train.GUARD_RATIO < 7.70
     # Y no tan abajo: a razón 5 el corpus sano rechaza 318/205829 = 0.1545 %, que es el costo
@@ -45,7 +44,7 @@ def test_la_razon_queda_debajo_de_la_banda_de_entrada():
 
 def test_la_cota_absoluta_deja_pasar_todo_el_tramo_sano():
     """Separa «ya está muerta» de «viva», no previene: el máximo sano de las 81 corridas es 9 397
-    y el mínimo de `runs/disyuntor-100k` desde que se trabó es 8.29e4, un hueco de 8.8x. La cota
+    y el mínimo de `disyuntor-100k` desde que se trabó es 8.29e4, un hueco de 8.8x. La cota
     va en medio. Si bajara de 9 397 empezaría a rechazar iteraciones sanas del corpus."""
     assert 9_397 < train.GUARD_ABS < 82_880
     # Y el piso real, medido el 2026-10-05: las excursiones que se resuelven SOLAS llegan a 5 312
@@ -110,7 +109,7 @@ def test_el_rebobinado_devuelve_pesos_y_momentos_exactos():
 def test_el_segundo_rebobinado_al_mismo_respaldo_tambien_devuelve_adam():
     """El test de arriba rebobina una vez. El lazo de `t1-guard-2delta-5k` empezó en el SEGUNDO
     rebobinado a la it 1 756: `opt.load_state_dict` adopta los tensores que recibe, y los pasos
-    dados entre uno y otro habían mutado el respaldo (`docs/mediciones/alias-respaldo-adam.txt`)."""
+    dados entre uno y otro habían mutado el respaldo (bitácora, «El disyuntor en 3D»)."""
     modelo = torch.nn.Linear(4, 2)
     opt = torch.optim.Adam(modelo.parameters(), lr=1e-2, betas=train.BETAS)
 
@@ -136,8 +135,7 @@ def test_el_segundo_rebobinado_al_mismo_respaldo_tambien_devuelve_adam():
 
 def test_un_rebobinado_que_cruza_un_hito_no_deshace_el_halving():
     """El `state_dict` de Adam trae el lr del momento del respaldo. Restaurarlo tal cual dejaba el
-    lr al doble del calendario hasta el final de la corrida (6-13 % de riesgo en `t1-rapido-30k`,
-    `docs/mediciones/edad-del-respaldo.txt`)."""
+    lr al doble del calendario hasta el final de la corrida (6-13 % de riesgo en `t1-rapido-30k`)."""
     modelo = torch.nn.Linear(4, 2)
     opt = torch.optim.Adam(modelo.parameters(), lr=train.LR, betas=train.BETAS)
     sched = torch.optim.lr_scheduler.MultiStepLR(opt, milestones=[3], gamma=0.5)
@@ -221,21 +219,21 @@ def test_la_prueba_de_amplificacion_es_independiente_de_la_escala():
 
 
 def test_la_traza_conserva_las_seis_columnas_viejas():
-    """Ocho `scripts/` leen `traza.npy` por posición y `[:, 5]` es `‖g‖` en los 81 registros ya
-    guardados. Las columnas nuevas van al final o se rompe todo el análisis histórico."""
+    """Los análisis de `scripts/` leen `traza.npy` por posición, y `[:, 5]` es `‖g‖` en todas las
+    trazas que se guardaron. Las columnas nuevas van al final o se rompe ese análisis."""
     import inspect
     fuente = inspect.getsource(train.main)
     assert "traza = np.zeros((args.iterations, 10)" in fuente
     assert "loss T dT lambda dlambda |g| centro amp rechazado rebobinado" in fuente
     assert "traza[it - 1, 5:] = (gnorm, centro, amp, rechazado, rebobinado)" in fuente
     # `amp` queda en la 7 en los DOS formatos de traza del repo —el de aquí y el de 30 columnas
-    # de `measure_traza_adjunta.py`— para que `traza[:, 7]` no dependa del ancho.
+    # de la medición del adjunto— para que `traza[:, 7]` no dependa del ancho.
     assert "`traza[:, 7]` significa lo mismo en los dos formatos" in fuente
 
 
 def test_el_bucle_no_corta_nunca():
-    """`scripts/veredicto_precision.py` separa corrida terminada de corrida en vuelo CONTANDO
-    FILAS, y `scripts/hazard_fase1.py` usa `len(traza)` como tiempo de exposición. Un `break` por
+    """Los análisis de supervivencia separan corrida terminada de corrida en vuelo CONTANDO FILAS
+    y usan `len(traza)` como tiempo de exposición. Un `break` por
     rechazos seguidos haría que una corrida cortada se contara como censurada viva, y el análisis
     de supervivencia se invertiría sin que nada se ponga rojo. El disyuntor rechaza; no corta."""
     import inspect

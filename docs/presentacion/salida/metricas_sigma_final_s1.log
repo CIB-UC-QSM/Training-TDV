@@ -1,3 +1,0 @@
-  final s1  σ=15  PSNR 34.125  NRMSE 4.43 %  SNR in 17.98 → out 27.49 dB
-  final s1  σ=25  PSNR 31.547  NRMSE 6.00 %  SNR in 13.54 → out 24.92 dB
-  final s1  σ=50  PSNR 28.268  NRMSE 8.82 %  SNR in 7.52 → out 21.64 dB

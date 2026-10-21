@@ -217,7 +217,8 @@ def test_la_receta_es_la_de_train():
                    "NOISE_SCALE", "DATA_RANGE", "rechaza_lote", "respalda", "rebobina"):
         assert getattr(train3d, nombre) is getattr(train, nombre), nombre
     assert (train3d.LR, train3d.BETAS, train3d.STEPS) == (4e-4, (0.9, 0.999), 10)
-    # El número de parches del paper, no su contenido: 4.3x los valores (bloque final, RECETA 3D).
+    # El número de parches del paper, no su contenido: 4.3x los valores
+    # (docs/porque-del-codigo.md, RECETA 3D).
     assert train3d.LOTE == train.BATCH_SIZE == 32
     # La VNet es la de `train.vnet_config` en gris: sólo cambia el tipo de R.
     esperada = train.vnet_config(train.T_INIT, 1)
@@ -229,7 +230,7 @@ def test_la_receta_es_la_de_train():
 
 def test_t_init_respeta_la_regla_2delta():
     """Que los defaults 3D despejen `2·DELTA_ADAM`, como `tests/test_recipe.py::test_regla_2delta`.
-    La «regla 2-δ» se **retiró el 2026-10-12** (bitácora, `## Descartado`): no es un piso. Queda
+    La «regla 2-δ» está retirada (bitácora, «Lo que dejó el 2D»): no es un piso. Queda
     como tripwire de procedencia —que nadie baje el `T_init` del 3D en silencio— y no se renombra
     para no romper referencias."""
     assert train3d.T_INIT >= 2 * train3d.DELTA_ADAM
@@ -242,7 +243,8 @@ def test_los_defaults_son_la_receta():
     a = train3d.opciones().parse_args(["--out", "x"])
     assert (a.patch, a.lote, a.micro_lote, a.vram_gb) == (48, 32, "auto", 96.0)
     assert a.workers == 2 and not a.sonda_vram
-    # No es receta (está en LIBRES), pero el costo derivado es el de 96^3 (bloque final).
+    # No es receta (está en LIBRES), pero el costo derivado es el de 96^3
+    # (docs/porque-del-codigo.md, ESTABILIDAD).
     assert a.estabilidad_lado == qsm3d.LADO_ESTABILIDAD == 96
     assert a.features == train.FEATURES == 32
     assert a.eval_recorte == train3d.EVAL_RECORTE == 128
@@ -260,9 +262,8 @@ def test_los_defaults_son_la_receta():
 
 def test_la_cota_absoluta_escala_con_los_valores_del_parche():
     """`‖g‖` suma sobre los valores del parche. Llevada por ese cociente, la cota de BSDS queda
-    5.1x sobre el máximo del arranque sano a 48^3 y 6.3x a 64^3 (crudo en
-    docs/mediciones/arranque-g-3d.txt); sin escalar, 64^3 la cruzaba dos veces en 80
-    iteraciones."""
+    5.1x sobre el máximo del arranque sano a 48^3 y 6.3x a 64^3 (bitácora, «El disyuntor en 3D»);
+    sin escalar, 64^3 la cruzaba dos veces en 80 iteraciones."""
     assert train3d.cota_absoluta(48) == pytest.approx(4.262e4, rel=1e-3)
     assert train3d.cota_absoluta(48) > 5 * 8_367
     assert train3d.cota_absoluta(64) > 6 * 15_985
@@ -272,10 +273,11 @@ def test_la_cota_absoluta_escala_con_los_valores_del_parche():
 
 # --- MEMORIA ---------------------------------------------------------------------------------
 
-# La grilla de docs/mediciones/costo-tdv3d.txt (5070 Ti, 2026-10-08, forward + backward con
-# `R.grad` compilado): (modo, parche, micro-lote, checkpointing) -> pico de `max_memory_allocated`
-# en GiB. Falta la fila sin `torch.compile`, que el modelo no cubre. El borrador que la midió
-# checkpointeaba los S pasos: lo que en `train3d` hace la entrada con gradiente (--guard-amp).
+# La grilla de costo medida en la 5070 Ti el 2026-10-08 (forward + backward con `R.grad`
+# compilado; bitácora, «Costo y memoria»): (modo, parche, micro-lote, checkpointing) -> pico de
+# `max_memory_allocated` en GiB. Falta la fila sin `torch.compile`, que el modelo no cubre. El
+# borrador que la midió checkpointeaba los S pasos: lo que en `train3d` hace la entrada con
+# gradiente (--guard-amp).
 GRILLA = {
     ("rapido", 32, 1, False): 1.49, ("rapido", 32, 2, False): 2.66,
     ("rapido", 32, 4, False): 5.21, ("rapido", 48, 1, False): 4.14,
@@ -290,11 +292,11 @@ NO_ENTRARON = [("rapido", 64, 2), ("rapido", 64, 4), ("rapido", 80, 1), ("rapido
                ("rapido", 80, 4), ("referencia", 48, 2), ("referencia", 64, 1),
                ("referencia", 64, 2), ("intermedio", 64, 1)]
 # La memoria de la 5070 Ti según torch, que es la que lee `train3d`: «total: 16585719808» en el
-# OOM de runs/s1-plain/log.txt (2026-09-01), 15.45 GiB. nvidia-smi da 16 303 MiB (15.92 GiB)
-# porque cuenta también lo que reserva el driver.
+# OOM del log de `s1-plain` (2026-09-01), 15.45 GiB. nvidia-smi da 16 303 MiB (15.92 GiB) porque
+# cuenta también lo que reserva el driver.
 GIB_5070TI = 16_585_719_808 / 2 ** 30
-# El pico de la corrida de humo, evaluación incluida (docs/mediciones/humo-train3d.txt,
-# 2026-10-08): `train3d` en `rapido`, 48^3 x 4, --checkpointing y sin --guard-amp.
+# El pico de la corrida de humo, evaluación incluida (2026-10-08): `train3d` en `rapido`,
+# 48^3 x 4, --checkpointing y sin --guard-amp.
 HUMO = 3.59
 
 
@@ -303,7 +305,7 @@ def test_el_modelo_de_memoria_reproduce_la_grilla():
     subestima más que MARGEN, que es lo que el margen promete (a 32^3 x 4 subestima 8 %), y todo
     lo que no entró en la 5070 Ti lo predice por encima de su memoria. Tampoco subestima la
     corrida de humo, con el paso 1 sin checkpoint: 3.53 contra 3.59. Con las constantes solas,
-    como antes del 2026-10-09, predecía 2.11."""
+    sin ese paso, predecía 2.11."""
     for (modo, parche, micro, ckpt), medido in GRILLA.items():
         predicho = train3d.vram_predicha(micro, parche, modo, ckpt, entrada_con_grad=True)
         if modo == "rapido" and parche in (48, 64):
@@ -412,7 +414,11 @@ def test_micro_lote_auto_deja_la_menor_cantidad_de_trozos():
     (["--lote", "0"], "--lote 0: tiene que ser al menos 1"),
     (["--micro-lote", "0"], "tiene que ser al menos 1"),
     (["--meseta", "-1"], "no pueden ser negativos"),
+    (["--meseta", "2", "--meseta-desde", "-5"], "no pueden ser negativos"),
     (["--meseta", "2", "--qsm-datos", ""], "--meseta 2 decide con el NRMSE QSM"),
+    (["--meseta-desde", "10000"], "necesitan --meseta N"),
+    (["--meseta-psnr"], "necesitan --meseta N"),
+    (["--qsm-max-iter", "0"], "--qsm-max-iter 0: tiene que ser al menos 1"),
     (["--micro-lote", "ocho"], "un entero o `auto`"),
     (["--patch", "96", "--vram-gb", "2"], "ni un parche de 96^3 entra en 2.00 GiB"),
     # Con checkpointing, el paso 1 cuenta sin --guard-amp y no con: `main` le pasa la bandera.
@@ -421,8 +427,8 @@ def test_micro_lote_auto_deja_la_menor_cantidad_de_trozos():
      "predice 3.62 GiB contra 3.15"),
 ])
 def test_un_micro_lote_imposible_es_un_error(banderas, mensaje, tmp_path, capsys, monkeypatch):
-    """Antes de tocar `--out`: un entero que no divide el lote, uno que no es entero positivo, y
-    `auto` cuando ni un parche entra."""
+    """Antes de tocar `--out`: un micro-lote mayor que el lote o que no es un entero positivo, un
+    lote vacío, una meseta negativa o sin datos QSM, y `auto` cuando ni un parche entra."""
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     with pytest.raises(SystemExit) as salida:
         train3d.main(["--out", str(tmp_path / "x"), *banderas])
@@ -467,9 +473,11 @@ def test_la_sonda_sin_gpu_termina_con_un_mensaje_claro(tmp_path, capsys, monkeyp
 def test_auto_registra_el_micro_lote_efectivo(corridas):
     """`auto` se resuelve antes de arrancar: `config.json`, el estado y el log llevan el número.
     En CPU el presupuesto es --vram-gb: 1.5 GiB dejan 1.35 útiles, y a 16^3 en `referencia` entran
-    2 parches (1.18 GiB predichos) y no 4 (1.76)."""
+    2 parches (1.18 GiB predichos) y no 4 (1.76). `config.json` lleva además el commit del código,
+    también sin W&B (la corrida va con --seguimiento no)."""
     carpeta = corridas["raiz"] / "auto"
-    assert json.loads((carpeta / "config.json").read_text())["micro_lote"] == 2
+    config = json.loads((carpeta / "config.json").read_text())
+    assert config["micro_lote"] == 2 and config["commit"] == train3d.commit_git()
     assert estado(carpeta, 1)["args"]["micro_lote"] == 2
     assert ("dispositivo: cpu, sin memoria que medir | presupuesto 1.50 GiB, 1.35 útiles | "
             "micro-lote 2 (auto), pico predicho 1.18 GiB") in corridas["auto"]
@@ -515,20 +523,33 @@ def arma_mascaras(raiz):
 
 def test_mascara_cerebro(corridas, tmp_path):
     """Con la bandera, `train3d` lee una máscara por volumen de entrenamiento, deja fuera del
-    sorteo al que no aloja ningún cubo, lo dice en el log y la registra en `config.json`. Sin las
-    máscaras se niega antes de tocar `--out` y dice cómo generarlas. Es receta: reanudar con otro
-    valor se rechaza, en los dos sentidos."""
+    sorteo al que no aloja ningún cubo, lo dice en el log y la registra en `config.json`, y elige
+    `best.pth` por el PSNR en el cerebro. Sin las máscaras de entrenamiento o sin las de
+    validación se niega antes de tocar `--out` y dice cómo generarlas. Es receta: reanudar con
+    otro valor se rechaza, en los dos sentidos."""
     base = arma_datos(tmp_path / "datos")
     arma_mascaras(tmp_path / "datos")
+    arma_mascaras_val(tmp_path / "datos")
     sin_mascaras = arma_datos(tmp_path / "sin")
+    sin_val = arma_datos(tmp_path / "sin-val")
+    arma_mascaras(tmp_path / "sin-val")
     con, receta = tmp_path / "con", corridas["reanudada"]["receta", K]
     procesos = [
-        lanza(base, con, "--mascara-cerebro", "--iterations", "2", "--guardar-cada", "2"),
+        lanza(base, con, "--mascara-cerebro", "--iterations", "2", "--eval-every", "1",
+              "--guardar-cada", "2"),
         lanza(sin_mascaras, tmp_path / "falta", "--mascara-cerebro"),
         lanza(corridas["base"], tmp_path / "prende", "--mascara-cerebro",
-              *VARIANTES["receta"], "--reanudar", str(receta / f"estado-{K:06d}.pth"))]
+              *VARIANTES["receta"], "--reanudar", str(receta / f"estado-{K:06d}.pth")),
+        lanza(sin_val, tmp_path / "falta-val", "--mascara-cerebro")]
     (salida, error), = espera(procesos[0])
-    (_, falta), (_, prende) = espera(*procesos[1:], codigo=2)
+    (_, falta), (_, prende), (_, falta_val) = espera(*procesos[1:], codigo=2)
+    historia, final = json.loads((con / "history.json").read_text()), estado(con, 2)
+    assert len(historia) == 2 and all("psnr_cerebro" in h for h in historia)
+    assert final["best_psnr"] == max(h["psnr_cerebro"] for h in historia)
+    assert final["mejor"]["iteration"] == max(historia, key=lambda h: h["psnr_cerebro"])[
+        "iteration"]
+    assert "faltan 2 de 2 máscaras de validación" in falta_val
+    assert not (tmp_path / "falta-val").exists()
     assert ("máscara de cerebro: 2 de 3 volúmenes con cubos de 16^3 a 1 vóxel o más del borde; "
             "mediana 105 esquinas por volumen") in salida
     assert "1 de 3 volúmenes sin un cubo de 18^3" in error and "sub-train2.npy" in error
@@ -563,7 +584,7 @@ def test_lr_en_reproduce_multisteplr():
 
 
 def test_el_hito_cae_despues_de_su_iteracion():
-    """El ejemplo de la especificación, que `runs/t1-rapido-30k` confirma en su log."""
+    """El ejemplo de la especificación, que confirmaba el log de `t1-rapido-30k`."""
     assert train3d.lr_en(25_000, [25_000]) == 4e-4
     assert train3d.lr_en(25_001, [25_000]) == 2e-4
     assert train3d.lr_en(1, []) == train3d.lr_en(10 ** 6, []) == train.LR
@@ -600,10 +621,10 @@ def test_la_traza_tiene_las_14_columnas(corridas):
 
 def test_la_traza_conserva_las_diez_columnas_de_train():
     """Los `scripts/` leen `traza.npy` por posición: las columnas nuevas van al final."""
-    fuente = inspect.getsource(train3d.main)
+    fuente = inspect.getsource(train3d.entrena)
     assert "traza[it - 1, :5] = torch.stack((perdida, model.T.detach(), model.T.grad," in fuente
     assert "traza[it - 1, 5:] = (gnorm, centro, amp, rechazado, rebobinado," in fuente
-    assert "# loss T dT lambda dlambda |g| centro amp rechazado rebobinado" in fuente
+    assert "# loss T dT lambda dlambda |g| centro amp rechazado rebobinado |g|micro" in fuente
 
 
 def test_la_iteracion_efectiva_descuenta_lo_rebobinado(corridas):
@@ -839,7 +860,9 @@ def test_un_corte_al_guardar_no_deja_un_pth_roto(tmp_path, monkeypatch):
         train3d.guarda_pth({"iteration": 2}, destino)
     monkeypatch.undo()
     assert torch.load(destino)["iteration"] == 1
-    assert "torch.save(" not in inspect.getsource(train3d.main)
+    # El único `torch.save` del archivo es el de `guarda_pth`.
+    assert inspect.getsource(train3d).count("torch.save(") == 1
+    assert "torch.save(" in inspect.getsource(train3d.guarda_pth)
 
 
 # Muere en la primera evaluación, como una corrida que se mata a mitad del bucle.
@@ -869,8 +892,8 @@ def test_seguir_y_morir_no_queda_terminada(corridas, tmp_path):
 
 def test_el_respaldo_del_estado_es_el_del_momento_en_que_se_tomo(corridas):
     """El respaldo que viaja en `estado-<it>.pth` tiene que ser el estado de la iteración en que se
-    tomó. Antes del arreglo de `rebobina()` no lo era: tras un rebobinado Adam adoptaba los tensores
-    del respaldo, y el paso aceptado siguiente los mutaba (docs/mediciones/alias-respaldo-adam.txt)."""
+    tomó. Si `rebobina()` no copiara, tras un rebobinado Adam adoptaría los tensores del respaldo,
+    y el paso aceptado siguiente los mutaría (bitácora, «El disyuntor en 3D»)."""
     carpeta = corridas["seguida"]["disyuntor"]
     for it in range(1, N + 1):
         e = estado(carpeta, it)
@@ -888,11 +911,15 @@ def test_el_respaldo_del_estado_es_el_del_momento_en_que_se_tomo(corridas):
 def test_el_bucle_corta_solo_por_meseta():
     """Como en `train.py`, los análisis de supervivencia cuentan filas de la traza: sin --meseta el
     bucle no corta nunca. El único `break` es el de la meseta, que deja el corte escrito en
-    `estado.json` (`test_la_meseta_parte_el_lr_y_corta`)."""
-    fuente = inspect.getsource(train3d.main)
-    assert fuente.count("break") == 1 and "if corte:\n            break" in fuente
-    assert fuente.count("corte = it") == 1 and fuente.count("corte = ") == 2
+    `estado.json` (`test_la_meseta_parte_el_lr_y_corta`), y no hay `return`."""
+    fuente = inspect.getsource(train3d.entrena)
+    assert fuente.count("break") == 1 and "if corrida.corte:\n            break" in fuente
+    assert "return" not in fuente
     assert "if not rechazado:\n            opt.step()" in fuente
+    # El corte lo marca sólo la meseta, y toda corrida empieza sin él.
+    assert inspect.getsource(train3d).count("corte = ") == 1
+    assert "corrida.corte = it" in inspect.getsource(train3d.aplica_meseta)
+    assert train3d.corrida_nueva(1).corte is None
 
 
 def test_la_evaluacion_mide_todo_el_recorte_y_el_tejido(tmp_path):
@@ -950,27 +977,37 @@ SIN_WANDB = ("import sys, train3d\n"
              "train3d.main(sys.argv[1:])\n"
              "assert 'wandb' not in sys.modules, 'importó wandb'\n")
 HAY_WANDB = importlib.util.find_spec("wandb") is not None
-# `best_qsm.pth` con la estabilidad y el NRMSE QSM forzados, una validación por iteración. La 1 y
-# la 2 son estables y mejoran; la 3 tiene el menor NRMSE pero está justo en el umbral; la 4 es
-# peor; la 5, inestable con el menor; la 6 empata con la 2. Queda la 2.
-PASOS = [1.0, 1.9, 2.0, 0.5, 3.0, 1.0]
-NRMSE = [5.0, 4.0, 3.0, 4.5, 2.0, 4.0]
+# `best_qsm.pth` con el NRMSE QSM mínimo y el final, el motivo y la estabilidad forzados, una
+# validación por iteración. La 1 y la 2 bajan el mínimo (la 2 sin cortar, con el final en 90 % y
+# estabilidad 7: no eligen); la 3 tiene el menor final pero no el menor mínimo; la 4 es peor; la
+# 5 no tiene ningún NRMSE finito; la 6 empata con la 2. Queda la 2.
+PASOS = [1.0, 7.0, 0.5, 0.5, 0.5, 1.0]
+MINIMOS = [5.0, 4.0, 4.5, 4.6, math.nan, 4.0]
+NRMSE = [6.0, 90.0, 3.0, 4.7, math.nan, 4.1]
+MOTIVOS = ["corte", "max_iter", "corte", "corte", "no_finito", "corte"]
 MEJOR_QSM = 2
-CLAVES_BEST_QSM = {"config", "model", "iteration", "psnr", "nrmse_final_pct", "nrmse_min_pct",
-                   "iteraciones", "motivo", "estabilidad"}
+CLAVES_BEST_QSM = {"config", "model", "iteration", "psnr", "nrmse_min_pct", "iter_min",
+                   "nrmse_final_pct", "iteraciones", "motivo", "estabilidad"}
+BUSCA_BEST_QSM = "best_qsm.pth: el de menor NRMSE QSM mínimo del ADMM, el de su mejor iteración"
 
 
-def forzada(pasos, nrmse):
+def forzada(pasos, nrmse, minimos=None, motivos=None):
     """`train3d` con la validación j (desde 0) midiendo `pasos[j]` en sus dos puntos de
-    estabilidad y un ADMM que da `nrmse[j]`; lo demás, lo que miden de verdad."""
+    estabilidad y un ADMM que da `nrmse[j]` de NRMSE final y, si se pasan, `minimos[j]` de mínimo
+    y `motivos[j]` de motivo; lo demás, lo que miden de verdad."""
     return ("import itertools, sys, train3d\n"
-            f"pasos, nrmse = {pasos!r}, {nrmse!r}\n"
+            "from math import inf, nan\n"
+            f"pasos, nrmse, minimos, motivos = {pasos!r}, {nrmse!r}, {minimos!r}, {motivos!r}\n"
             "est, admm = train3d.estabilidad, train3d.admm_wtdv\n"
             "n_est, n_admm = itertools.count(), itertools.count()\n"
             "train3d.estabilidad = lambda *a, **k: {**est(*a, **k),\n"
             "                                       'paso': pasos[next(n_est) // 2]}\n"
-            "train3d.admm_wtdv = lambda *a, **k: {**admm(*a, **k),\n"
-            "                                     'nrmse_final': nrmse[next(n_admm)]}\n"
+            "def admm_forzado(*a, **k):\n"
+            "    j = next(n_admm)\n"
+            "    return {**admm(*a, **k), 'nrmse_final': nrmse[j],\n"
+            "            **({} if minimos is None else {'nrmse_min': minimos[j]}),\n"
+            "            **({} if motivos is None else {'motivo': motivos[j]})}\n"
+            "train3d.admm_wtdv = admm_forzado\n"
             "train3d.main(sys.argv[1:])\n")
 
 
@@ -1021,11 +1058,11 @@ def qsm_jsonl(carpeta):
 def con_qsm(tmp_path_factory):
     """Las corridas de esta sección, en paralelo: sin evaluación QSM, sin ella ni la estabilidad,
     con ella sobre un COSMOS de juguete de 24^3, con un ADMM y una estabilidad que levantan, con
-    una lámina QSM que levanta, con la carpeta de COSMOS incompleta y sin W&B, con la estabilidad
-    y el NRMSE forzados (estables o no), con COSMOS y sin la estabilidad y, si wandb está
-    instalado, offline. Después, la de QSM reanudada desde su estado de la 3, tres reanudaciones de
-    la forzada estable que miran `best_qsm.pth` y, con wandb, la offline extendida, reanudada
-    desde la 3 y con una rama desde la 3."""
+    una lámina QSM que levanta, con la carpeta de COSMOS incompleta y sin W&B, con los NRMSE, el
+    motivo y la estabilidad forzados (con un mínimo finito o sin ninguno), con COSMOS y sin la
+    estabilidad y, si wandb está instalado, offline. Después, la de QSM reanudada desde su estado
+    de la 3, tres reanudaciones de la forzada que elige que miran `best_qsm.pth` y, con wandb, la
+    offline extendida, reanudada desde la 3 y con una rama desde la 3."""
     raiz = tmp_path_factory.mktemp("qsm")
     base = arma_datos(raiz / "datos")
     arma_mascaras_val(raiz / "datos")
@@ -1045,10 +1082,12 @@ def con_qsm(tmp_path_factory):
                         codigo=FALLA_LAMINA, entorno=w),
         "incompleta": lanza(base, raiz / "incompleta-out", *QSM, "--qsm-datos", str(incompleta),
                             codigo=SIN_WANDB),
-        "estable": lanza(base, raiz / "estable", *QSM, "--qsm-datos", str(cosmos),
-                         "--eval-every", "1", "--guardar-cada", "1", codigo=forzada(PASOS, NRMSE)),
-        "inestable": lanza(base, raiz / "inestable", *QSM, "--qsm-datos", str(cosmos),
-                           codigo=forzada([2.0, 7.0], [5.0, 3.0])),
+        "elige": lanza(base, raiz / "elige", *QSM, "--qsm-datos", str(cosmos),
+                       "--eval-every", "1", "--guardar-cada", "1",
+                       codigo=forzada(PASOS, NRMSE, minimos=MINIMOS, motivos=MOTIVOS)),
+        "sin-minimo": lanza(base, raiz / "sin-minimo", *QSM, "--qsm-datos", str(cosmos),
+                            codigo=forzada([0.5, 0.5], [math.nan] * 2, minimos=[math.nan] * 2,
+                                           motivos=["no_finito"] * 2)),
         "qsm-sin-estabilidad": lanza(base, raiz / "qsm-sin-estabilidad", *QSM, "--qsm-datos",
                                      str(cosmos), "--estabilidad-lado", "0"),
     }
@@ -1067,11 +1106,11 @@ def con_qsm(tmp_path_factory):
     # el de la 1 sin COSMOS (uno ajeno, de después) y una rama desde el de la 6.
     for nombre, desde, extra in (("conserva", MEJOR_QSM, ["--qsm-datos", str(cosmos)]),
                                  ("aparta", 1, [])):
-        shutil.copytree(raiz / "estable", raiz / nombre)
+        shutil.copytree(raiz / "elige", raiz / nombre)
         segundas[nombre] = lanza(base, raiz / nombre, *QSM, *extra, "--iterations", str(desde),
                                  "--reanudar", str(raiz / nombre / f"estado-{desde:06d}.pth"))
     segundas["rama-qsm"] = lanza(base, raiz / "rama-qsm", *QSM, "--qsm-datos", str(cosmos),
-                                 "--reanudar", str(raiz / "estable" / f"estado-{QSM_N:06d}.pth"))
+                                 "--reanudar", str(raiz / "elige" / f"estado-{QSM_N:06d}.pth"))
     if HAY_WANDB:
         # Qué corrida de W&B abre `--reanudar`, sin QSM (`--qsm-datos` es libre): extender la
         # terminada, seguir desde un estado anterior a lo registrado y una rama.
@@ -1156,9 +1195,15 @@ def test_la_evaluacion_qsm_deja_sus_metricas(con_qsm):
     assert [f["iteration"] for f in filas] == [QSM_EVALUA, QSM_N]
     for f in filas:
         assert set(f) == {"iteration", "efectiva", "nrmse_final_pct", "nrmse_min_pct",
-                          "iter_min", "iteraciones", "alpha", "segundos", "motivo"} | ESTABILIDAD
+                          "iter_min", "iteraciones", "alpha", "segundos", "motivo",
+                          "nrmse_trayectoria_pct", "update_trayectoria"} | ESTABILIDAD
         assert f["iteraciones"] == 3 and f["motivo"] == "max_iter"
         assert 0 < f["nrmse_min_pct"] <= f["nrmse_final_pct"] and f["alpha"] > 0
+        # Las trayectorias: una entrada por iteración, la última es el final y el menor, el mínimo.
+        trayectoria = f["nrmse_trayectoria_pct"]
+        assert len(trayectoria) == len(f["update_trayectoria"]) == f["iteraciones"]
+        assert trayectoria[-1] == f["nrmse_final_pct"]
+        assert min(trayectoria) == f["nrmse_min_pct"] == trayectoria[f["iter_min"]]
     assert salida.count("    qsm NRMSE=") == 2 and "COSMOS 24x24x24" in salida
     hecho = json.loads((con / "estado.json").read_text())
     mejor = min(filas, key=lambda f: f["nrmse_final_pct"])
@@ -1198,27 +1243,28 @@ def test_reanudar_con_evaluacion_qsm(con_qsm):
 
 
 def best_qsm_esperado(carpeta):
-    """El `best_qsm` que se deduce de `qsm.jsonl`: el menor NRMSE final entre las filas sin fallo
-    con la estabilidad en COSMOS medida y menor que el umbral, el primero si empatan; o None."""
+    """El `best_qsm` que se deduce de `qsm.jsonl`: la fila sin fallo de menor NRMSE mínimo
+    finito, la primera si empatan; o None."""
     filas = qsm_jsonl(carpeta) if (carpeta / "qsm.jsonl").exists() else []
-    estables = [f for f in filas if "fallo" not in f and "estabilidad" in f
-                and f["estabilidad"] < qsm3d.UMBRAL_ESTABILIDAD
-                and math.isfinite(f["nrmse_final_pct"])]
-    mejor = min(estables, key=lambda f: f["nrmse_final_pct"], default=None)
-    return mejor and {k: mejor[k] for k in ("iteration", "nrmse_final_pct", "estabilidad")}
+    validas = [f for f in filas if "fallo" not in f and math.isfinite(f["nrmse_min_pct"])]
+    mejor = min(validas, key=lambda f: f["nrmse_min_pct"], default=None)
+    return mejor and {k: mejor.get(k) for k in train3d.RESUMEN_BEST_QSM}
 
 
-def test_best_qsm_es_el_menor_nrmse_entre_los_estables(con_qsm):
-    """Con la estabilidad y el NRMSE forzados, `best_qsm.pth` es el estado de la 2: no lo pisan
-    ni el menor NRMSE justo en el umbral (la 3), ni uno inestable (la 5), ni uno peor o empatado
-    (la 4 y la 6). Lleva config, pesos, iteración y PSNR de esa validación más sus métricas QSM,
-    sin el optimizer; el log lo dice cada vez que se escribe, y cada estado lleva el de su
-    momento. La traza es la de la corrida sin QSM."""
-    raiz, salida = con_qsm["raiz"], con_qsm["salidas"]["estable"][0]
-    carpeta = raiz / "estable"
+def test_best_qsm_es_el_de_menor_nrmse_minimo(con_qsm):
+    """Con los NRMSE, el motivo y la estabilidad forzados, `best_qsm.pth` es el estado de la 2,
+    aunque su ADMM no cortó, su final sea 90 % y su estabilidad 7: no lo pisan ni el menor final
+    (la 3), ni uno sin NRMSE finito (la 5), ni uno peor o empatado (la 4 y la 6). Lleva config,
+    pesos, iteración y PSNR de esa validación más sus métricas QSM, sin el optimizer; el log lo
+    dice cada vez que se escribe, y cada estado lleva el de su momento. La traza es la de la
+    corrida sin QSM."""
+    raiz, salida = con_qsm["raiz"], con_qsm["salidas"]["elige"][0]
+    carpeta = raiz / "elige"
     assert bit_a_bit(traza(carpeta), traza(raiz / "sin"))
     filas = qsm_jsonl(carpeta)
-    assert [f["nrmse_final_pct"] for f in filas] == NRMSE
+    np.testing.assert_array_equal([f["nrmse_min_pct"] for f in filas], MINIMOS)
+    np.testing.assert_array_equal([f["nrmse_final_pct"] for f in filas], NRMSE)
+    assert [f["motivo"] for f in filas] == MOTIVOS
     assert [f["estabilidad"] for f in filas] == PASOS
     best = torch.load(carpeta / "best_qsm.pth", map_location="cpu", weights_only=False)
     assert set(best) == CLAVES_BEST_QSM
@@ -1227,39 +1273,43 @@ def test_best_qsm_es_el_menor_nrmse_entre_los_estables(con_qsm):
     h = origen["history"][-1]
     assert best["iteration"] == fila["iteration"] == h["iteration"] == MEJOR_QSM
     assert best["psnr"] == h["psnr"]
-    metricas = ("nrmse_final_pct", "nrmse_min_pct", "iteraciones", "motivo", "estabilidad")
+    metricas = ("nrmse_min_pct", "iter_min", "nrmse_final_pct", "iteraciones", "motivo",
+                "estabilidad")
     assert {k: best[k] for k in metricas} == {k: fila[k] for k in metricas}
     for it in range(1, QSM_N + 1):
         assert estado(carpeta, it)["mejor_qsm"]["iteration"] == min(it, MEJOR_QSM), it
     assert igual(estado(carpeta, QSM_N)["mejor_qsm"], best)
     hecho = json.loads((carpeta / "estado.json").read_text())
     assert hecho["best_qsm"] == best_qsm_esperado(carpeta) == {
-        "iteration": MEJOR_QSM, "nrmse_final_pct": 4.0, "estabilidad": 1.9}
-    assert hecho["qsm_nrmse_mejor_pct"] == 2.0          # el de todas, estable o no
+        k: fila[k] for k in train3d.RESUMEN_BEST_QSM}
+    assert (hecho["best_qsm"]["nrmse_min_pct"], hecho["best_qsm"]["nrmse_final_pct"]) == (4.0, 90.0)
+    assert hecho["qsm_nrmse_mejor_pct"] == 3.0          # el menor final de todas
     assert salida.count("    best_qsm.pth: NRMSE QSM ") == 2
-    assert ("best_qsm.pth: el de menor NRMSE QSM entre las validaciones con estabilidad en COSMOS "
-            "< 2\n") in salida
+    assert BUSCA_BEST_QSM + "\n" in salida
 
 
-def test_sin_un_estado_estable_no_hay_best_qsm(con_qsm):
-    """Con la estabilidad en COSMOS en 2 o más en todas las validaciones, con el ADMM y la
-    estabilidad fallando, sin COSMOS o sin la estabilidad (`--estabilidad-lado 0`), no hay
-    `best_qsm.pth` y `estado.json` dice null; el arranque dice una vez por qué."""
+def test_sin_un_nrmse_finito_no_hay_best_qsm(con_qsm):
+    """Sin un NRMSE mínimo finito en ninguna evaluación, con el ADMM y la estabilidad fallando y
+    sin COSMOS, no hay `best_qsm.pth` y `estado.json` dice null; el arranque dice una vez qué
+    busca o por qué no. Sin la estabilidad (`--estabilidad-lado 0`) se busca y se escribe igual:
+    no elige."""
     raiz, salidas = con_qsm["raiz"], con_qsm["salidas"]
-    busca = ("best_qsm.pth: el de menor NRMSE QSM entre las validaciones con estabilidad en "
-             "COSMOS < 2")
-    for nombre, arranque in (("inestable", busca), ("falla", busca),
-                             ("sin", "best_qsm.pth: no se busca (sin COSMOS)"),
-                             ("qsm-sin-estabilidad",
-                              "best_qsm.pth: no se busca (--estabilidad-lado 0)")):
+    for nombre, arranque in (("sin-minimo", BUSCA_BEST_QSM), ("falla", BUSCA_BEST_QSM),
+                             ("sin", "best_qsm.pth: no se busca (sin COSMOS)")):
         carpeta, salida = raiz / nombre, salidas[nombre][0]
         assert not (carpeta / "best_qsm.pth").exists(), nombre
         assert json.loads((carpeta / "estado.json").read_text())["best_qsm"] is None, nombre
         assert estado(carpeta, QSM_N)["mejor_qsm"] is None, nombre
         assert [l for l in salida.splitlines() if "best_qsm.pth:" in l] == [arranque], nombre
-    assert [f["estabilidad"] for f in qsm_jsonl(raiz / "inestable")] == [2.0, 7.0]
-    assert len(qsm_jsonl(raiz / "qsm-sin-estabilidad")) == 2
-    assert bit_a_bit(traza(raiz / "inestable"), traza(raiz / "sin"))
+    filas = qsm_jsonl(raiz / "sin-minimo")
+    assert [f["motivo"] for f in filas] == ["no_finito"] * 2
+    assert all(math.isnan(f["nrmse_min_pct"]) for f in filas)
+    assert bit_a_bit(traza(raiz / "sin-minimo"), traza(raiz / "sin"))
+    sin_estabilidad = raiz / "qsm-sin-estabilidad"
+    assert BUSCA_BEST_QSM in salidas["qsm-sin-estabilidad"][0]
+    assert len(qsm_jsonl(sin_estabilidad)) == 2 and (sin_estabilidad / "best_qsm.pth").exists()
+    assert json.loads((sin_estabilidad / "estado.json").read_text())["best_qsm"][
+        "estabilidad"] is None
 
 
 def test_best_qsm_sale_de_qsm_jsonl(con_qsm):
@@ -1284,14 +1334,16 @@ def test_reanudar_repone_o_aparta_best_qsm(con_qsm):
     Una rama desde la 6 hereda el del tronco."""
     raiz, salidas = con_qsm["raiz"], con_qsm["salidas"]
     carga = lambda ruta: torch.load(ruta, map_location="cpu", weights_only=False)
-    tronco = raiz / "estable" / "best_qsm.pth"
+    tronco = raiz / "elige" / "best_qsm.pth"
     conserva, aparta, rama = raiz / "conserva", raiz / "aparta", raiz / "rama-qsm"
     assert (conserva / "best_qsm.pth").read_bytes() == tronco.read_bytes()
     assert not list(conserva.glob("best_qsm-descartada-*"))
     assert igual(carga(aparta / f"best_qsm-descartada-{MEJOR_QSM:06d}.pth"), carga(tronco))
     assert igual(carga(aparta / "best_qsm.pth"), estado(aparta, 1)["mejor_qsm"])
+    primera = qsm_jsonl(raiz / "elige")[0]
+    assert (primera["nrmse_min_pct"], primera["estabilidad"]) == (MINIMOS[0], PASOS[0])
     assert json.loads((aparta / "estado.json").read_text())["best_qsm"] == {
-        "iteration": 1, "nrmse_final_pct": NRMSE[0], "estabilidad": PASOS[0]}
+        k: primera[k] for k in train3d.RESUMEN_BEST_QSM}
     assert ("best_qsm.pth: no se busca (sin COSMOS) | hereda el del estado, de la 1"
             in salidas["aparta"][0])
     assert igual(carga(rama / "best_qsm.pth"), carga(tronco))
@@ -1441,7 +1493,8 @@ def test_reanudar_un_estado_sin_banderas_nuevas(corridas, tmp_path):
     ruta = carpeta / f"estado-{K:06d}.pth"
     viejo = estado(carpeta, K)
     for clave in ("mascara_cerebro", "seguimiento", "wandb_proyecto", "qsm_datos",
-                  "eval_qsm_cada", "qsm_max_iter", "estabilidad_lado"):
+                  "eval_qsm_cada", "qsm_max_iter", "estabilidad_lado", "meseta_desde",
+                  "meseta_psnr"):
         del viejo["args"][clave]
     del viejo["qsm"], viejo["mejor_qsm"]
     torch.save(viejo, ruta)
@@ -1507,11 +1560,21 @@ HUELLAS = ("import hashlib, sys, train3d\n"
            "    return g\n"
            "train3d.add_noise = con_huella(train3d.add_noise)\n"
            "train3d.main(sys.argv[1:])\n")
-# El NRMSE QSM de cada evaluación de la meseta: con paciencia 1 y 2 mitades, la 1 y la 2 mejoran,
-# la 3 y la 4 parten el lr (hitos 3 y 4), la 5 mejora y la 6 corta. La 7 y la 8 no llegan a correr.
+# El NRMSE QSM mínimo de cada evaluación de la meseta: con paciencia 1 y 2 mitades, la 1 y la 2
+# mejoran, la 3 y la 4 parten el lr (hitos 3 y 4), la 5 mejora y la 6 corta. La 7 y la 8 no llegan
+# a correr. El final salta a contramano, como el de un ADMM que no converge: la meseta no lo mira.
 NRMSE_MESETA = [5.0, 4.0, 4.5, 4.2, 3.9, 4.0, 9.0, 9.0]
+FINAL_MESETA = [90.0, 140.0, 30.0, 20.0, 100.0, 10.0, 9.0, 9.0]
 MESETA = ["--iterations", "8", "--eval-every", "1", "--guardar-cada", "1", "--meseta", "1",
           "--meseta-mitades", "2"]
+# La meseta Y desde la 3, con el NRMSE mínimo y el PSNR forzados: la 1 y la 2 (1.0 %, que ganarían
+# a todas) no cuentan y la 3 fija los dos mejores; en la 4 el NRMSE no mejora pero el PSNR sí, y no
+# parte; en la 5 ninguno: lr/2 desde la 6; en la 6 mejora el NRMSE; en la 7 ninguno y, sin mitades,
+# corta. La 8 no llega a correr.
+NRMSE_Y = [1.0, 1.0, 5.0, 6.0, 6.0, 4.0, 4.5, 9.0]
+PSNR_Y = [20.0, 20.0, 20.0, 21.0, 20.5, 20.0, 20.0, 20.0]
+MESETA_Y = ["--iterations", "8", "--eval-every", "1", "--guardar-cada", "1", "--meseta", "1",
+            "--meseta-mitades", "1", "--meseta-desde", "3", "--meseta-psnr"]
 # W&B que no abre aunque haya credencial, como con la red caída al arrancar.
 NO_ABRE = ("import sys, train3d\n"
            "train3d.seguimiento._hay_credencial = lambda: True\n"
@@ -1522,6 +1585,19 @@ NO_ABRE = ("import sys, train3d\n"
 def huellas(salida):
     """`(tamaño, huella)` de cada lote ruidoso, en orden."""
     return [tuple(l.split()[1:]) for l in salida.splitlines() if l.startswith("RUIDOSA")]
+
+
+def forzada_psnr(minimos, psnrs):
+    """`forzada` con el NRMSE mínimo de cada evaluación QSM en `minimos` y, además, el PSNR de cada
+    validación en `psnrs`: el que elige `best.pth` y mira --meseta-psnr sin --mascara-cerebro."""
+    n = len(minimos)
+    return forzada([1.0] * n, [50.0] * n, minimos=minimos).replace(
+        "train3d.main(sys.argv[1:])\n",
+        f"psnrs = {psnrs!r}\n"
+        "ev, n_ev = train3d.evaluate_denoising3d, itertools.count()\n"
+        "train3d.evaluate_denoising3d = lambda *a, **k: {**ev(*a, **k),\n"
+        "                                                'psnr_denoised': psnrs[next(n_ev)]}\n"
+        "train3d.main(sys.argv[1:])\n")
 
 
 @pytest.fixture(scope="module")
@@ -1539,7 +1615,9 @@ def nuevas(tmp_path_factory):
     procesos["sobreajuste"] = lanza(base, raiz / "sobreajuste", *corto, "--micro-lote", "3",
                                     "--sobreajuste", codigo=HUELLAS)
     procesos["meseta"] = lanza(base, raiz / "meseta", *QSM, "--qsm-datos", str(cosmos), *MESETA,
-                               codigo=forzada([1.0] * 8, NRMSE_MESETA))
+                               codigo=forzada([1.0] * 8, FINAL_MESETA, minimos=NRMSE_MESETA))
+    procesos["meseta-y"] = lanza(base, raiz / "meseta-y", *QSM, "--qsm-datos", str(cosmos),
+                                 *MESETA_Y, codigo=forzada_psnr(NRMSE_Y, PSNR_Y))
     no_abre = lanza(base, raiz / "no-abre", "--seguimiento", "online", codigo=NO_ABRE)
     salidas = dict(zip(procesos, (out for out, _ in espera(*procesos.values()))))
     (_, error_no_abre), = espera(no_abre, codigo=2)
@@ -1550,7 +1628,7 @@ def nuevas(tmp_path_factory):
     (salidas["meseta-reanudada"], _), = espera(lanza(
         base, reanudada, *QSM, "--qsm-datos", str(cosmos), *MESETA,
         "--reanudar", str(reanudada / "estado-000003.pth"),
-        codigo=forzada([1.0] * 5, NRMSE_MESETA[3:])))
+        codigo=forzada([1.0] * 5, FINAL_MESETA[3:], minimos=NRMSE_MESETA[3:])))
     return {"raiz": raiz, "salidas": salidas, "no_abre": error_no_abre}
 
 
@@ -1573,7 +1651,8 @@ def test_un_lote_en_trozos_desiguales_es_el_mismo_lote(nuevas):
 def test_el_sobreajuste_repite_el_mismo_lote_con_el_mismo_ruido(nuevas):
     """Cada iteración, el mismo lote ruidoso: el primero de la corrida normal con la misma semilla
     (los 3 volúmenes de `arma_datos` son los primeros 3). La primera pérdida es la de esa corrida,
-    bit a bit, y después baja; va sin disyuntor, y la validación lleva el PSNR del lote."""
+    bit a bit, y después baja; va sin las cotas del disyuntor, y la validación lleva el PSNR del
+    lote."""
     raiz, salidas = nuevas["raiz"], nuevas["salidas"]
     fijo, normal = huellas(salidas["sobreajuste"]), huellas(salidas["trozos-3"])
     assert len(fijo) == 4 and len(set(fijo)) == 1 and fijo[0] == normal[0]
@@ -1588,13 +1667,13 @@ def test_el_sobreajuste_repite_el_mismo_lote_con_el_mismo_ruido(nuevas):
         mse = t[entrada["iteration"] - 1, 0] / 16 ** 3
         assert entrada["psnr_lote"] == pytest.approx(10 * math.log10(1 / mse), rel=1e-9)
     assert "psnr_lote" not in json.loads((raiz / "trozos-3" / "history.json").read_text())[0]
-    assert "sin disyuntor" in salidas["sobreajuste"]
+    assert "sin las cotas del disyuntor" in salidas["sobreajuste"]
 
 
 def test_paso_meseta():
     """La regla, evaluación por evaluación. Con paciencia 1, toda evaluación que no mejora parte el
     lr hasta agotar las mitades, y la siguiente corta; con 2 hacen falta dos seguidas, y la cuenta
-    vuelve a cero al mejorar y al partir. Un NRMSE que no es finito no mejora nunca."""
+    vuelve a cero al mejorar y al partir. Un NRMSE que no es finito no cuenta: ni mejora ni suma."""
     m = train3d.meseta_nueva()
     acciones = [train3d.paso_meseta(m, x, it, 1, 2) for it, x in enumerate(NRMSE_MESETA[:6], 1)]
     assert acciones == ["mejora", "mejora", "mitad", "mitad", "mejora", "corte"]
@@ -1605,15 +1684,66 @@ def test_paso_meseta():
     assert acciones == ["mejora", "espera", "mejora", "espera", "mitad", "espera", "corte"]
     m = train3d.meseta_nueva()
     assert [train3d.paso_meseta(m, x, it, 1, 1) for it, x in
-            enumerate([math.nan, math.inf, 3.0], 1)] == ["mitad", "corte", "mejora"]
-    assert train3d.lr_en(4, [] + m["hitos"]) == train3d.LR / 2
+            enumerate([math.nan, math.inf, 3.0, math.nan, 3.5], 1)] == [
+        "nula", "nula", "mejora", "nula", "mitad"]
+    assert m == {"hitos": [5], "sin_mejora": 0, "mejor": 3.0, "it_mejor": 3}
+    assert train3d.lr_en(5, m["hitos"]) == train3d.LR
+    assert train3d.lr_en(6, m["hitos"]) == train3d.LR / 2
+
+
+def test_paso_meseta_con_psnr():
+    """La regla Y (--meseta-psnr): cada métrica lleva su mejor y su cuenta, y la mitad o el corte
+    piden las dos en la paciencia. Con el NRMSE estancado desde la 1, sólo NRMSE partiría en la 3;
+    con el PSNR haciendo récord en la 2 y la 3, espera hasta la 5. Al partir vuelven a cero las dos
+    cuentas, y un empate no es récord en ninguna. Un PSNR no finito anula la evaluación."""
+    nrmse = [5.0, 5.1, 5.2, 5.3, 5.0, 4.9, 5.0, 5.0]
+    psnr = [30.0, 30.1, 30.2, 30.1, 30.2, 30.0, 30.0, 30.0]
+    solo = train3d.meseta_nueva()
+    assert [train3d.paso_meseta(solo, x, it, 2, 1) for it, x in enumerate(nrmse[:3], 1)] == [
+        "mejora", "espera", "mitad"]
+    m = train3d.meseta_nueva()
+    acciones = [train3d.paso_meseta(m, x, it, 2, 1, psnr=y)
+                for it, (x, y) in enumerate(zip(nrmse, psnr), 1)]
+    assert acciones == ["mejora", "mejora", "mejora", "espera", "mitad", "mejora", "espera",
+                        "corte"]
+    assert m == {"hitos": [5], "sin_mejora": 0, "mejor": 4.9, "it_mejor": 6,
+                 "mejor_psnr": 30.2, "it_mejor_psnr": 3, "sin_mejora_psnr": 0}
+    m = train3d.meseta_nueva()
+    assert [train3d.paso_meseta(m, 5.0, 1, 1, 1, psnr=math.nan),
+            train3d.paso_meseta(m, 5.0, 2, 1, 1, psnr=30.0)] == ["nula", "mejora"]
+    assert m["it_mejor"] == m["it_mejor_psnr"] == 2
+
+
+def test_la_evaluacion_qsm_para_si_empeora_con_techo_de_25(monkeypatch):
+    """`evalua_qsm` le pasa al ADMM `tol` = -inf (sin el corte por umbral del autor), la parada
+    por NRMSE y el techo de --qsm-max-iter, 25 por defecto; devuelve el NRMSE y el update de cada
+    iteración."""
+    visto = {}
+
+    def admm(denoisers, datos, **kw):
+        visto.update(kw)
+        return {"chi": np.zeros(1), "nrmse": [40.0, 30.0], "x_update": [100.0, 9.0],
+                "alpha": 2.0, "iteraciones": 2, "motivo": "max_iter", "nrmse_final": 30.0,
+                "nrmse_min": 30.0, "it_min": 1, "k": 1, "segundos": 0.1}
+
+    monkeypatch.setattr(train3d, "admm_wtdv", admm)
+    r = train3d.evalua_qsm(torch.nn.Linear(1, 1), {}, "cpu", None, 25)
+    assert visto["max_iter"] == 25 and visto["tol"] == -math.inf
+    assert visto["subidas_para_cortar"] == train3d.QSM_SUBIDAS == 2
+    assert r["nrmse_trayectoria_pct"] == [40.0, 30.0] and r["update_trayectoria"] == [100.0, 9.0]
+    assert train3d.QSM_MAX_ITER == 25
+    assert train3d.opciones().get_default("qsm_max_iter") == 25
 
 
 def test_la_meseta_parte_el_lr_y_corta(nuevas):
-    """Con el NRMSE forzado: lr/2 desde la 4 y desde la 5, y en la 6, sin mitades, el corte. La
-    traza tiene 6 filas, el estado de la 6 se guarda, y `estado.json` dice terminada, con el corte
-    y las iteraciones hechas. Reanudada desde la 3, la misma corrida bit a bit."""
+    """Con el NRMSE mínimo forzado (y el final a contramano): lr/2 desde la 4 y desde la 5, y en la
+    6, sin mitades, el corte. La traza tiene 6 filas, el estado de la 6 se guarda, y `estado.json`
+    dice terminada, con el corte y las iteraciones hechas. Reanudada desde la 3, la misma corrida
+    bit a bit."""
     raiz, salidas = nuevas["raiz"], nuevas["salidas"]
+    filas = qsm_jsonl(raiz / "meseta")
+    assert [f["nrmse_min_pct"] for f in filas] == NRMSE_MESETA[:6]
+    assert [f["nrmse_final_pct"] for f in filas] == FINAL_MESETA[:6]
     t = traza(raiz / "meseta")
     assert t.shape[0] == 6
     np.testing.assert_array_equal(t[:, 11], train3d.LR * np.array([1, 1, 1, 0.5, 0.25, 0.25]))
@@ -1636,6 +1766,29 @@ def test_la_meseta_parte_el_lr_y_corta(nuevas):
     sin_reloj = [{k: v for k, v in f.items() if k != "segundos"} for f in qsm_jsonl(seguida)]
     assert [{k: v for k, v in f.items() if k != "segundos"}
             for f in qsm_jsonl(reanudada)] == sin_reloj
+
+
+def test_la_meseta_y_mira_desde_una_iteracion(nuevas):
+    """--meseta-desde 3 y --meseta-psnr con el NRMSE mínimo y el PSNR forzados (NRMSE_Y, PSNR_Y):
+    las evaluaciones de la 1 y la 2 no cuentan, el PSNR que sube en la 4 frena la mitad, ninguno en
+    la 5 la da (lr/2 desde la 6), y en la 7, sin mitades, corta. Sin --meseta-desde, el 1.0 % de
+    la 1 habría partido el lr en la 2."""
+    raiz, salida = nuevas["raiz"], nuevas["salidas"]["meseta-y"]
+    t = traza(raiz / "meseta-y")
+    assert t.shape[0] == 7
+    np.testing.assert_array_equal(t[:, 11], train3d.LR * np.array([1, 1, 1, 1, 1, 0.5, 0.5]))
+    hecho = json.loads((raiz / "meseta-y" / "estado.json").read_text())
+    assert hecho["corte"] == {"motivo": "meseta del NRMSE QSM y del PSNR", "iteracion": 7,
+                              "mitades": 1}
+    assert hecho["meseta"] == {"hitos": [5], "sin_mejora": 0, "mejor": 4.0, "it_mejor": 6,
+                               "mejor_psnr": 21.0, "it_mejor_psnr": 4, "sin_mejora_psnr": 0}
+    assert [f["nrmse_min_pct"] for f in qsm_jsonl(raiz / "meseta-y")] == NRMSE_Y[:7]
+    lineas = [l for l in salida.splitlines() if "meseta:" in l]
+    assert "ni el PSNR de la validación sube del suyo" in lineas[0]
+    assert "mira desde la 3" in lineas[0]
+    assert ("sin bajar de 5.00 % (la 3) ni subir de 21.000 dB (la 4): lr/2 desde la 6, mitad 1 "
+            "de 1") in lineas[1]
+    assert "la corrida se corta en la 7" in lineas[2] and len(lineas) == 3
 
 
 def test_online_sin_wandb_listo_sale_antes_de_entrenar(nuevas, tmp_path, capsys, monkeypatch):

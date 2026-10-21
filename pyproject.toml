@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "matplotlib>=3.11.1",
-    "nibabel>=5.4",    # NIfTI: sólo lo usa datasets/cache_ldm100k.py, no el entrenamiento
+    "nibabel>=5.4",    # NIfTI: sólo lo usan los scripts de datasets/, no el entrenamiento
     "numpy>=2.5.2",
     "pillow>=11.0",
     "scipy>=1.18.1",

@@ -6,8 +6,8 @@ Todo corre sobre datos sintéticos: arreglos chicos para `ddr.data3d`, y NIfTI c
 para los tres subcomandos de `datasets/cache_ldm100k3d.py` y para `combina` de
 `datasets/mascaras_ldm100k3d.py`, nunca sobre LDM_100k. Que el escaneo y la selección repitan bit
 a bit a los scripts que los midieron se verificó aparte, sobre LDM_100k (bloque final de
-`datasets/cache_ldm100k3d.py`), y lo mismo la alineación de las máscaras reales
-(docs/mediciones/mascaras-val-ldm100k3d.txt).
+`datasets/cache_ldm100k3d.py`), y lo mismo la alineación de las máscaras reales (bitácora,
+«Datos: LDM_100k en 3D»).
 """
 
 import hashlib
@@ -130,8 +130,8 @@ CONFIGS_HASH = {
                         intentos=3),
 }
 # sha256 de los bytes float32 de los parches 0..49 de cada configuración, sobre los volúmenes de
-# `volumenes_hash`. Calculados el 2026-10-12 con el `ddr/data3d.py` de 23b07ec, antes de que
-# existiera `mascaras` (numpy 2.5.2, torch 2.13.0).
+# `volumenes_hash`. Calculados el 2026-10-12 con un `ddr/data3d.py` sin `mascaras` (numpy 2.5.2,
+# torch 2.13.0).
 HASHES = {
     "receta": "ba6f592d4616a6c08ec2b3c17505015ac1a51346b2062d6bd0e3ffaf3dd05a68",
     "aumentos": "dc2fadfcd9d1ed16cdb2cd1fa38f3936725313a651f6488423a606653b54809b",

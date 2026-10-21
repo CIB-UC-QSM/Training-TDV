@@ -18,9 +18,9 @@ Por cerebro, 0.16 s deepbet y 0.51 s HD-BET en una 5070 Ti; en CPU (16 hilos), 0
 Un sujeto ya hecho se saltea: cortar y relanzar sigue donde quedó. `combina` exige que el
 volumen ya esté cacheado (`cache_ldm100k3d.py cachea` con la misma lista y el mismo split).
 
-Cómo armar H con uv, con las versiones que se midieron el 2026-10-09
-(docs/mediciones/verificacion-cubos-cerebro.txt). Los pesos de deepbet vienen en su wheel; los de
-HD-BET se bajan de Zenodo (14445620) a una carpeta propia, no a `~/hd-bet_params` como su CLI:
+Cómo armar H con uv, con las versiones que se midieron el 2026-10-09. Los pesos de deepbet vienen
+en su wheel; los de HD-BET se bajan de Zenodo (14445620) a una carpeta propia, no a
+`~/hd-bet_params` como su CLI:
 
     uv venv --python 3.12 $H/deepbet
     uv pip install --python $H/deepbet/bin/python deepbet==1.0.2 torch==2.14.1 nibabel==5.4.2
@@ -290,12 +290,12 @@ if __name__ == "__main__":
 # CLI, en memoria y sin espejado. Verificado el 2026-10-09 sobre 2
 # sujetos: las CLI oficiales dan las mismas máscaras vóxel a vóxel y el afín del NIfTI original;
 # CPU contra GPU difieren en 20–36 vóxeles por cerebro (Dice 0.99999). Las dos máscaras salen en
-# el espacio del NIfTI, [160, 224, 160] LAS a 1 mm (docs/mediciones/mascaras-cerebro-ldm.txt).
+# el espacio del NIfTI, [160, 224, 160] LAS a 1 mm.
 # Sin TTA, HD-BET cuesta 5x menos (0.51 contra 2.53 s en GPU) y su Dice contra la versión con TTA
 # es 0.9972 [0.9958–0.9978] en 24 sujetos: con el margen de 1 vóxel de `ddr.data3d`, el 0.0 %
 # [0.0–0.3] de los cubos 48^3 que salen de esta intersección toca algo que la de con TTA deja
-# afuera (docs/mediciones/cobertura-cubos-cerebro.txt). Costo derivado de esos tiempos: 0.67 s
-# por cerebro en GPU, ~0.4 h para 2 000 y ~1.5 h para 8 000; en CPU, 12 h y 50 h.
+# afuera (docs/bitacora.md, «Datos: LDM_100k en 3D»). Costo derivado de esos tiempos: 0.67 s por
+# cerebro en GPU, ~0.4 h para 2 000 y ~1.5 h para 8 000; en CPU, 12 h y 50 h.
 
 ---------------------------------------------------------------------------------------------------
 
@@ -304,7 +304,7 @@ if __name__ == "__main__":
 # afuera (LCR externo, la zona de los senos, la cisterna magna, un foco brillante de la base);
 # HD-BET sigue la superficie pial. La intersección mide casi lo mismo que HD-BET (1 387 contra
 # 1 389 ml de mediana) y, con margen 1, quedó sobre corteza en todas las vistas de borde miradas
-# (docs/bitacora.md, «Cubos 100 % cerebro»). Los huecos se rellenan como en la medición
+# (medido el 2026-10-09). Los huecos se rellenan como en la medición
 # (`binary_fill_holes`); en los 24 medidos no había ninguno, y `combina` imprime cuántos vóxeles
 # rellenó. El recorte es `caja_tejido(normaliza(v) > UMBRAL_TEJIDO, MARGEN)`, la caja con que
 # `cachea_uno` escribió el volumen: `combina` lo vuelve a calcular y exige que el `.npy` cacheado

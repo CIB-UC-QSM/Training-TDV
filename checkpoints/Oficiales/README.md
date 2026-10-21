@@ -10,7 +10,7 @@ repositorio están en [`../Entrenados/`](../Entrenados/README.md).
 | `tdv3-3-25-f32-color.pth` | TDV33, RGB | 0.024727 | 0.104522 | 31.537 dB en CBSD68 (paper 31.53) |
 | `tdv3-3-25-f32-gray.pth` | TDV33, gris | 0.017223 | 0.216907 | sin número archivado (paper 29.37 en BSD68) |
 
-El 31.537 sale de `docs/presentacion/salida/metricas_sigma_oficial.json`. Del gris sólo queda el
+El 31.537 lo da `evaluate.py` con `--file-list datasets/bsds500/cbsd68.txt`. Del gris sólo queda el
 test: `tests/test_reproduction.py` exige el 29.37 publicado con tolerancia 0.02 dB.
 
 Cada archivo trae `config` (la arquitectura, con la que `evaluate.load_vnet` reconstruye el modelo)

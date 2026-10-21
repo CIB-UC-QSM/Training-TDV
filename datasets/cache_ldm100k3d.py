@@ -11,15 +11,14 @@ escribe en el layout `<salida>/images/<split>/*.npy` que leen `ddr.data3d` y `tr
     python datasets/cache_ldm100k3d.py cachea --lista lista_eval.txt --split val
     python datasets/cache_ldm100k3d.py cachea --lista lista_train_2000.txt --split train
 
-Los `.npy` salen en float16 `[D, H, W]` y en [0, 1], con la normalización de
-`datasets/cache_ldm100k.py` (percentil 99.5 de los vóxeles positivos a 1.0). Ojo: el volumen
-conserva el cráneo, que LDM_100k no saca; esto es T1, no QSM.
+Los `.npy` salen en float16 `[D, H, W]` y en [0, 1], con `normaliza` (percentil 99.5 de los
+vóxeles positivos a 1.0). Ojo: el volumen conserva el cráneo, que LDM_100k no saca; esto es T1, no
+QSM.
 """
 
 from __future__ import annotations
 
 import argparse
-import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -27,10 +26,20 @@ from pathlib import Path
 import nibabel as nib
 import numpy as np
 
-# Una sola normalización de la casa: la de los cortes 2D. El directorio va a mano porque con
-# `python -I` el del script no entra en `sys.path`.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from cache_ldm100k import P_NORM, UMBRAL_TEJIDO, normaliza  # noqa: E402
+# --- NORMALIZACIÓN ---------------------------------------------------------------------------
+P_NORM = 99.5           # percentil de los vóxeles positivos que se manda a 1.0
+UMBRAL_TEJIDO = 0.05    # por encima de esta fracción de la norma, un vóxel cuenta como tejido
+
+
+def normaliza(vol: np.ndarray) -> np.ndarray:
+    """A [0, 1] dividiendo por el percentil P_NORM de los vóxeles positivos.
+
+    Por el máximo sería frágil: hay vóxeles calientes sueltos en 6.55e4, el techo del uint16.
+    """
+    pos = vol[vol > 0]
+    escala = np.percentile(pos, P_NORM) if pos.size else 1.0
+    return np.clip(vol / max(escala, 1e-6), 0.0, 1.0)
+
 
 # --- ESCANEO ---------------------------------------------------------------------------------
 RAW = "/home/santicien/Public/LDM-data/LDM_100k/LDM_100k/rawdata"   # en la máquina del autor
@@ -47,11 +56,11 @@ ESCALARES = ("p995_crudo", "frac_tejido", "frac_oscura_caja", "q10_caja", "q50_c
 # Los de `scripts/selecciona_ldm100k.py`, con que se midió la selección, salvo Z_CALIDAD y N_TRAIN
 # (allá `--n 500 2000 8000`): cambiar uno cambia las listas.
 SEMILLA = 20261008
-N_TRAIN = (2000, 8000)           # 2 000 entran en RAM (~19 GB); 8 000 igualan los del cache 2D
+N_TRAIN = (2000, 8000)           # 2 000 entran en RAM (~19 GB); 8 000 (~78 GB), no
 N_EVAL = 12                      # 12 recortes de 128^3: ≤ 1 min de evaluación a 2.26 µs/vóxel
 COMPONENTES = 32
 # Ningún volumen de los 100 000 pasa de z = 8.1; a 6 salían 31 con anatomía plausible, la cola que
-# se busca (`docs/mediciones/variedad-ldm100k.txt`). A 10 no sale ninguno: queda de salvaguarda.
+# se busca (medido el 2026-10-08). A 10 no sale ninguno: queda de salvaguarda.
 Z_CALIDAD = 10.0
 MUESTRA = 20_000                 # filas para ajustar la PCA y para el k-means
 ITER_KMEANS = 50
@@ -375,7 +384,7 @@ if __name__ == "__main__":
 # así; sobre 600 sujetos, `escanea` da su `miniaturas.npy` y su `escalares.npz`. Con los 100 000,
 # todos legibles, a z = 6 quedaban 31 fuera (14 por escalares, 22 por PCA); a Z_CALIDAD = 10,
 # ninguno. Costo: el escaneo, 25.5 min con 8 procesos; la selección, 9 min con BLAS en 32 hilos.
-# Con los defaults, la cobertura de las listas está en docs/mediciones/seleccion-ldm100k3d.txt.
+# Con los defaults, la cobertura de las listas está en `datasets/ldm100k3d/README.md`.
 # Repetida el 2026-10-08 con BLAS en 16 y en 32 hilos, la lista de evaluación y la de 2 000 salen
 # idénticas; la de 8 000 tiene los mismos sujetos, pero con dos pares de vecinos del voraz en otro
 # orden (X difiere en ≤ 2.9e-6 y el voraz desempata distinto). El orden importa, porque el dataset
@@ -388,10 +397,10 @@ if __name__ == "__main__":
 # caja del tejido (> UMBRAL_TEJIDO) agrandada MARGEN vóxeles y recortada al campo, y `.npy` en
 # float16. float16 tiene 11 bits de mantisa: el error de redondeo en [0.5, 1] es ≤ 2.4e-4, 400
 # veces menor que el ruido de sigma 25 (0.098), y el limpio ES el valor guardado, así que no sesga.
-# Medido el 2026-10-08 sobre 200 volúmenes sorteados con `scripts/mide_tejido_ldm100k3d.py` (crudo
-# en docs/mediciones/tejido-ldm100k3d.txt): la caja mide 144–160 x 195–223 x 144–154 y en el eje
-# 2 toca el borde del campo en los 200 (con cráneo, la cabeza llena el volumen). Fuera de la caja
-# todo vale ≤ 0.05 por construcción, y el p99 es 0.0098: el margen agrega aire, no tejido.
+# Medido el 2026-10-08 sobre 200 volúmenes sorteados con `scripts/mide_tejido_ldm100k3d.py`: la
+# caja mide 144–160 x 195–223 x 144–154 y en el eje 2 toca el borde del campo en los 200 (con
+# cráneo, la cabeza llena el volumen). Fuera de la caja todo vale ≤ 0.05 por construcción, y el
+# p99 es 0.0098: el margen agrega aire, no tejido.
 # MARGEN = 4 deja aire entre la cabeza y el borde del parche donde el campo lo permite, por 9.9 MB
 # de mediana por volumen (10.9 MB el volumen entero, 9.1 MB sin margen); un parche 48^3 sorteado
 # pasa el MIN_TEJIDO de `ddr/data3d.py` el 93.5 % de las veces (96.3 % sin margen).

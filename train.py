@@ -58,7 +58,7 @@ LAMBDA_INIT = 0.1
 
 # --- DISYUNTOR DE LOTES ----------------------------------------------------------------------
 # Dos pruebas con trabajos distintos y un rebobinado para cuando las dos llegan tarde. Cada
-# número salió de una medición; cuál, en el bloque final.
+# número salió de una medición; cuál, en docs/porque-del-codigo.md, DISYUNTOR DE LOTES.
 GUARD_RATIO = 5.0       # relativo: debajo de la banda 7.70-8.97x que metió a `disyuntor-100k`
 GUARD_ABS = 1e4         # absoluto: cubre los tramos donde la mediana todavía no es estimable
 GUARD_VENTANA = 100     # largo de la mediana móvil; el relativo se arma cuando se llena
@@ -104,7 +104,7 @@ def rechaza_lote(gnorm: float, amp: float, escala: list[float], ratio: float, ab
 
     `escala` son las últimas `ventana` normas ACEPTADAS, y esta función la muta: el pico rechazado
     no entra, así que no puede subir su propio umbral. Es lo que lo distingue del clip, que
-    reescala la magnitud y a eso Adam ya es invariante (`docs/bitacora.md`, 2026-09-04).
+    reescala la magnitud y a eso Adam ya es invariante (AGENTS.md, «Lo que no sirve»).
     """
     centro = float(np.median(escala)) if escala else float("nan")
     # El relativo sigue la escala de la corrida, que se mueve dos órdenes a lo largo del
@@ -184,7 +184,7 @@ def main() -> None:
                    help="rechaza el lote si |g| supera esta cota absoluta. `inf` la apaga")
     p.add_argument("--guard-ventana", type=int, default=GUARD_VENTANA)
     # Rebobinar no corta el bucle: la traza sigue teniendo una fila por iteración, que es lo que
-    # `scripts/veredicto_precision.py` usa para separar terminada de en vuelo.
+    # cuentan los análisis de supervivencia.
     p.add_argument("--guard-seguidos", type=int, default=GUARD_SEGUIDOS,
                    help="rechazos seguidos que disparan el rebobinado al respaldo. 0 lo apaga")
     p.add_argument("--guard-respaldo", type=int, default=GUARD_RESPALDO,
@@ -240,7 +240,7 @@ def main() -> None:
 
     # --- OPTIMIZADOR --------------------------------------------------------------------------
     # Un solo grupo y un solo lr, que es la receta literal. Bajar el lr de T y lambda por separado
-    # se probó y creó un modo de fallo nuevo (docs/bitacora.md, v2/v3): no repetirlo.
+    # se probó y creó un modo de fallo nuevo (AGENTS.md, regla 1): no repetirlo.
     opt = torch.optim.Adam(model.parameters(), lr=LR, betas=BETAS)
     # Hitos explícitos en vez de StepLR: con los defaults la lista es 25k/50k/75k/100k y el lr
     # vale lo mismo iteración por iteración, pero así el primer halving se puede adelantar.
@@ -272,11 +272,11 @@ def main() -> None:
     history, best_psnr, max_grad, t0 = [], 0.0, 0.0, time.time()
     escala, rechazos, seguidos, max_seguidos = [], 0, 0, 0
     respaldo, it_respaldo, rebobinados, limpias = None, 0, 0, 0
-    # Las seis primeras columnas no se mueven de lugar: ocho `scripts/` las leen por posición.
+    # Las seis primeras columnas no se mueven de lugar: hay análisis que leen la traza por posición.
     traza = np.zeros((args.iterations, 10), dtype=np.float64)
     # loss T dT lambda dlambda |g| centro amp rechazado rebobinado
-    # La 7 es `amp` igual que en las trazas de 30 columnas de `scripts/measure_traza_adjunta.py`,
-    # así que `traza[:, 7]` significa lo mismo en los dos formatos.
+    # La 7 es `amp`, como en las trazas de 30 columnas de la medición del adjunto, así que
+    # `traza[:, 7]` significa lo mismo en los dos formatos.
     lotes = iter(loader)
 
     for it in range(1, args.iterations + 1):
@@ -399,7 +399,7 @@ def main() -> None:
     peak = torch.cuda.max_memory_allocated() / 2**30 if device.type == "cuda" else 0.0
     horas = (time.time() - t0) / 3600
     # El estado se escribe, no se deduce: contar filas de traza confunde «terminó» con «la
-    # mataron», y `scripts/veredicto_precision.py` leería una corrida muerta como censurada viva.
+    # mataron», y un análisis de supervivencia leería una corrida muerta como censurada viva.
     (out / "estado.json").write_text(json.dumps({
         "terminada": True, "iteraciones_pedidas": args.iterations,
         "iteraciones_hechas": args.iterations, "mejor_psnr": best_psnr,
@@ -431,107 +431,6 @@ if __name__ == "__main__":
 #   7. Una fila de traza; cada `--log-every`, una línea de log; cada `--eval-every`, evaluación.
 # El bucle no tiene `break` ni chequeo de NaN: una corrida que estalla sigue hasta la última
 # iteración, y sólo ahí se escribe `estado.json`. Si ese archivo falta, se cortó desde afuera.
-
----------------------------------------------------------------------------------------------------
-
-# --- CONTROLES APRENDIDOS --------------------------------------------------------------------
-# T es el tiempo de parada: el largo total del descenso, repartido en S pasos de T/S. λ (`lmbda`)
-# es el peso del término de datos. Se aprenden junto con los pesos y tienen pared en 0: con T = 0
-# el esquema devuelve `z` sin tocar; λ = 0 apaga el término de datos y al checkpoint oficial le
-# cuesta 0.033 dB (`docs/mediciones/lambda-sensibilidad.txt`).
-# δ_Adam = lr/√(1−β₂) = 0.01265 es lo que Adam mueve un parámetro ante un pico de cualquier tamaño,
-# en régimen (t ≫ 1/(1−β₂) = 1000). La «regla 2-δ» (arrancar en 2·δ_Adam o más) se retiró el
-# 2026-10-12: el 2 era una elección y no predijo nada. `tests/test_recipe.py` la sigue pidiendo a
-# T_INIT y LAMBDA_INIT como higiene. Ningún init es del paper.
-# T_INIT = 8·δ_Adam ≈ 0.1012: con él, una corrida de 10⁵ iteraciones en `referencia` llega a
-# 31.547 dB en CBSD68, contra 31.53 publicado. Entre 2·δ y 10·δ la PSNR no se mueve de forma
-# medible (0.015 dB a 10 000 iteraciones): `T_init` cambia cuántos estallidos hay que contener.
-
----------------------------------------------------------------------------------------------------
-
-# --- DISYUNTOR DE LOTES ----------------------------------------------------------------------
-# ‖g‖ vale ~10² en una corrida sana; de una iteración a la otra puede saltar 400×, y llega a ~10¹³.
-# No es un bug —los tests comparan el gradiente con autograd—: unos pocos lotes de ‖g‖ moderado
-# llevan los pesos a una cuenca mala, donde todo lote da un ‖g‖ enorme y de la que no se sale solo.
-# Un rechazo saltea `opt.step()`: el lote no entra en `m` ni `v`, los promedios móviles de Adam del
-# gradiente y de su cuadrado. Un clip no alcanza: Adam divide `m` por `√v` y la escala se cancela.
-# `rechaza_lote` rechaza si ‖g‖ no es finito, si pasa GUARD_ABS, si pasa GUARD_RATIO veces la
-# mediana de las últimas GUARD_VENTANA normas aceptadas (con la ventana llena), o si `amp` pasa
-# `--guard-amp`. Sin rechazos no toca la aritmética, y ninguna bandera deja pasar un ‖g‖ no finito.
-#   GUARD_RATIO = 5      los lotes que meten a una corrida en la cuenca mala van a 7.70–8.97 veces
-#                        la mediana (tres medidos). 5 queda debajo; rechaza el 0.15 % de los sanos.
-#   GUARD_VENTANA = 100  mediana y no media exponencial: al arrancar, ‖g‖ sube de ~26 a ~830 en
-#                        doce iteraciones y una EMA lo rechazaría. Un pico no sube su propio umbral.
-#   GUARD_ABS = 1e4      la única prueba armada en las 100 primeras iteraciones. Separa excursiones
-#                        que se resuelven solas (≤ 6 113) de las que no (≥ 1.97·10⁵).
-# Rechazar llega un paso tarde: ‖g‖ se mide en los pesos de ahora. Por eso `respalda` copia en RAM
-# pesos, `m`, `v` y ventana (~4.5 MB) tras GUARD_LIMPIAS = 3 aceptadas seguidas —en un estallido
-# hay aceptadas sueltas— y a GUARD_RESPALDO = 250 iteraciones o más del anterior. A GUARD_SEGUIDOS
-# = 25 rechazos seguidos (un tramo sano llega a 18), `rebobina` vuelve ahí y sigue con lotes nuevos.
-# `it` y el calendario no retroceden: `rebobina` restaura Adam pero conserva el lr vigente, porque
-# el `state_dict` del optimizador trae el lr del respaldo y deshacía un halving cruzado. Y restaura
-# una COPIA: `opt.load_state_dict` adopta los tensores que recibe, así que sin ella los pasos
-# siguientes mutaban el respaldo y el segundo rebobinado al mismo dejaba a Adam como estaba.
-# `--guard-amp` prueba amp = ‖p_0‖/‖p_S‖, p_s = ∂L/∂x_s (no la clave `amp` de MODES); sana, ~0.70.
-# Viene apagada: alarga el backward hasta x_0, y en los eventos medidos ‖g‖ dispara igual o antes.
-
----------------------------------------------------------------------------------------------------
-
-# --- MODOS DE EJECUCIÓN ----------------------------------------------------------------------
-# Misma receta; cambian precisión, velocidad y reproducibilidad. Cada entrada de MODES fija:
-#   amp            dtype de autocast: bf16 (7 bits de mantisa) en `rapido`, None en los otros dos.
-#   tf32           convoluciones y matmuls en TF32 (10 bits) en `intermedio`; si no, fp32 IEEE.
-#   deterministic  kernels deterministas, sin sumas atómicas cuyo orden varía entre corridas.
-#   benchmark      cuDNN cronometra y elige el algoritmo de convolución: dos corridas idénticas
-#                  pueden elegir distinto y separarse desde la iteración 1–2.
-# Sólo `referencia`, fp32 IEEE de 23 bits, apaga `benchmark` y repite bit a bit; es también el
-# único modo donde `--checkpointing` (recomputar el forward en el backward) es exacto.
-
----------------------------------------------------------------------------------------------------
-
-# --- DATASET ---------------------------------------------------------------------------------
-# Por defecto, BSDS400 en color: `train` + `test` de BSDS500, 400 imágenes; CBSD68 vive en `val`
-# y no se entrena con ella. Otro dataset entra como `<raíz>/images/<split>/`, con un cargador por
-# extensión en `ddr.data.IMAGE_LOADERS`. `--channels 1` cambia sólo K1: 387 970 → 387 394
-# parámetros, los 32x2x3x3 = 576 pesos de los canales que sobran.
-# El ruido, de desviación sigma/255 sobre datos en [0, 1], se sortea y se suma en CPU con su propio
-# generador. T y λ se aprenden para esa escala, y por eso `datasets/cache_ldm100k.py` lleva cada
-# volumen de resonancia a [0, 1] por el percentil 99.5 de sus voxels positivos. Semillas: torch,
-# `--seed`; parches, `seed·100`, un generador por índice ajeno al worker; ruido, `seed·100 + 1`.
-# Con --sigma-max > 0 el ruido es ciego: cada parche sortea su sigma ~ U(--sigma-min, --sigma-max)
-# del mismo generador, antes que su ruido (`add_noise_ciego`, la misma función que el 3D). La
-# evaluación sigue a --sigma, en CBSD68 a 25. Con la bandera en 0 la rama nueva no corre y la
-# corrida es bit a bit la de antes (120 iteraciones en `referencia`, 2026-10-16).
-
----------------------------------------------------------------------------------------------------
-
-# --- OPTIMIZADOR -----------------------------------------------------------------------------
-# Adam con un solo grupo y LR = 4e-4 para todo, como en el paper; el lr se divide por 2 en cada
-# hito. El primero es `--lr-halve-start` (0 lo pone en `--lr-halve-every`), los demás van cada
-# `--lr-halve-every`, y `--lr-halvings` les pone tope. Con 10⁵ iteraciones son 25k/50k/75k/100k,
-# el StepLR del paper; con las 10 000 del default (ITERACIONES_TANDA), ninguno. Adelantarlos sirve
-# porque el final rinde poco: a lr fijo, el tramo 76k→100k compra +0.0047 dB en 9 h de GPU. Entre
-# dos hitos conviene dejar varias veces la memoria de Adam, 1/(1−β₂) = 1000 iteraciones.
-
----------------------------------------------------------------------------------------------------
-
-# --- EVALUACIÓN Y ARCHIVOS DE SALIDA ---------------------------------------------------------
-# Cada `--eval-every` iteraciones y en la última, `evaluate_denoising` mide la PSNR media sobre
-# `--eval-list` (las 68 de CBSD68) con ruido de semilla fija por imagen, igual en toda evaluación.
-# Se evalúa donde se entrena: el sigma del ruido y el de referencia, cuyo cociente reescalaría la
-# entrada, valen los dos `--sigma`. En `--out` quedan:
-#   config.json    las banderas, defaults incluidos. Se escribe al arrancar.
-#   history.json   una entrada por evaluación: iteration, psnr, T, lambda.
-#   traza.npy      float64, una fila por iteración y diez columnas (abajo). Se reescribe en cada
-#                  evaluación: una corrida cortada pierde lo posterior a la última.
-#   last.pth       la última evaluación; best.pth, la de mejor PSNR. train.py no reanuda.
-#                  Claves: config (la de `vnet_config`), model, iteration, psnr, optimizer.
-#   estado.json    sólo al terminar: terminada, iteraciones_pedidas, iteraciones_hechas,
-#                  mejor_psnr, psnr_final, rechazos, max_seguidos, rebobinados, horas, vram_pico_gb.
-# Columnas de traza.npy, las cinco primeras anotadas antes del paso de Adam (2 y 4 tras el clip):
-#   0 loss   1 T   2 ∂L/∂T   3 λ   4 ∂L/∂λ   5 ‖g‖ sin recortar   6 mediana de la ventana
-#   7 amp (NaN sin `--guard-amp`)   8 rechazado (0/1)   9 rebobinado (0/1)
-# El log de cada `--log-every` lleva loss, lr, T, λ, ‖g‖, max‖g‖ desde la línea anterior, rechazos,
-# rebobinados, horas restantes y corr = ‖x_S − z‖/‖z − y‖: lo que corrigió la red, en unidades del
-# ruido, sobre el último micro-lote (~1 es sano).
+# El resto de las notas de este archivo, en docs/porque-del-codigo.md, «train.py (la receta que
+# hereda el 3D)».
 '''

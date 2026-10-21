@@ -6,7 +6,8 @@
 hiperparámetros. La ec. (7) del paper acopla ambos al mismo `T/S`; el código de los autores los
 desacopla en dos escalares independientes y esta implementación conserva eso. Ojo: que los
 checkpoints oficiales tengan `lambda != T` **no prueba nada**, porque `lambda/T` no es invariante de
-gauge — transportados, son la ec. (7). Atarlos está medido y descartado: ver docs/bitacora.md.
+gauge — transportados, son la ec. (7). Atarlos está medido y descartado: AGENTS.md, «Lo que no
+sirve».
 
 `T` está acoplado a `S`: cambiar `S` en inferencia sin reajustar `T` degrada el resultado.
 

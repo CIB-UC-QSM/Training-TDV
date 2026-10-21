@@ -44,20 +44,20 @@ def test_delta_adam_es_el_desplazamiento_publicado():
 
 def test_regla_2delta():
     """Que los DEFAULTS despejen `DELTA_ADAM` con margen. El nombre dice «regla 2-delta» y esa
-    regla se **retiró el 2026-10-12** (bitácora; `## Descartado`): el factor 2 era una elección y
+    regla está retirada (bitácora, «Lo que dejó el 2D»): el factor 2 era una elección y
     nunca predijo nada —`tinit/B-larga` arrancó EN 2·delta y murió con `T = 0`, `1.1·delta` terminó
     las 100 000—. El test se queda porque lo que assertea sigue valiendo como tripwire de
     procedencia: que nadie baje los init en silencio. No renombrado para no romper referencias.
 
-    Un pico de gradiente desplaza cualquier parámetro en `DELTA_ADAM`,
-    cantidad que NO depende del tamaño del pico (docs/mediciones/adam-respuesta-al-pico.txt), así
-    que un escalar con pared en 0 que valga menos que eso lo manda al clamp un solo lote.
+    Un pico de gradiente desplaza cualquier parámetro en `DELTA_ADAM`, cantidad que NO depende del
+    tamaño del pico (AGENTS.md, «Lo que ya se sabe»), así que un escalar con pared en 0 que valga
+    menos que eso lo manda al clamp un solo lote.
     `T_INIT = 0.001` mató tres corridas por esa vía.
 
     Es un PISO, no el valor: los dos escalares arrancan en 0.1, que lo cumple con margen. Y lo que
     el piso NO cubre: `lambda` no muere por un pico sino por deriva, y contra eso hace falta
     2.2*DELTA_ADAM. Vale como higiene de procedencia, no como corrección de un modo de fallo —
-    medido, `lambda` cuesta 0.003 dB en todo ese rango. Ver docs/bitacora.md, 2026-09-06."""
+    medido el 2026-09-06, `lambda` cuesta 0.003 dB en todo ese rango."""
     for nombre, valor in (("T_INIT", train.T_INIT), ("LAMBDA_INIT", train.LAMBDA_INIT)):
         assert valor >= 2 * train.DELTA_ADAM, (
             f"{nombre}={valor:.5f} queda a menos de dos picos del clamp en cero "
@@ -68,7 +68,7 @@ def test_regla_2delta():
 def test_lambda_no_esta_atada_a_T():
     """`T` y `lambda` son dos escalares independientes, como en el `model.py` de los autores: sus
     únicos modos son `fixed` y `learned`, no hay modo atado. Los dos arrancan en 0.1 por medición
-    (docs/bitacora.md, 2026-09-07), pero cambiar uno no mueve al otro."""
+    (2026-09-07), pero cambiar uno no mueve al otro."""
     cfg = train.vnet_config(0.05)
     assert cfg["T"]["init"] == 0.05
     assert cfg["lambda"]["init"] == train.LAMBDA_INIT == 0.1

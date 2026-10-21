@@ -116,7 +116,7 @@ def test_no_bias_anywhere(model):
 
     NO da escala-equivariancia: eso se midió el 2026-09-06 y es falso (el teorema de Mohan et al.
     exige activación 1-homogénea y la Student-t no lo es; el esquema se desvía 15-28 %). Ver
-    docs/mediciones/escala-equivariancia.txt."""
+    AGENTS.md, «Lo que ya se sabe»."""
     assert not [name for name, _ in model.named_parameters() if "bias" in name]
     for module in model.modules():
         if hasattr(module, "bias"):

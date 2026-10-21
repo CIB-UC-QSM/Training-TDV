@@ -6,7 +6,8 @@
 Para sigma distinto del de entrenamiento se aplica el reescalado del paper (sec. 5.2): se lleva la
 entrada al nivel de ruido de referencia y se devuelve la salida a su escala. Es una aproximación de
 dominio, no una identidad: la red NO es escala-equivariante —bias-free no alcanza— y el esquema
-completo se desvía 15-28 % de VNet(cz) = c·VNet(z). Medido el 2026-09-06, está en la bitácora.
+completo se desvía 15-28 % de VNet(cz) = c·VNet(z) (medido el 2026-09-06; AGENTS.md, «Lo que ya
+se sabe»).
 """
 
 from __future__ import annotations

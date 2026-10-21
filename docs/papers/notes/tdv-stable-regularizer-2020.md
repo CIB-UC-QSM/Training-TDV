@@ -74,13 +74,14 @@ E [ Σ_{s=0}^{S-1} ⟨ p_{s+1}, (Id + (T/S)AᵀA)⁻¹ (x_{s+1} − x_s) ⟩ ] =
 > paper». **`λ/T` no es invariante de gauge**: `(T, K_N) → (cT, K_N/c)` deja el esquema idéntico y no
 > toca `λ`, así que con `c = λ*/T* = 4.227` el checkpoint oficial se escribe exactamente con
 > `λ = T = 0.1045`, salida idéntica a 5·10⁻⁸. El checkpoint publicado **es** la ec. (7) en otras
-> unidades. Ver `docs/mediciones/gauge-lambda-T.txt`.
+> unidades.
 >
 > ⚠️ **Ampliado el 2026-09-06.** Verificado contra `VLOGroup/tdv` (rama `master`), que es lo único
 > publicado por los autores —y es **sólo inferencia**: no hay entrenamiento ni optimizador—: su
 > `model.py` define `T` y `lmbda` como dos `Parameter` independientes, con los únicos modos `fixed`
 > y `learned`, **sin ningún modo atado**; y el `config` serializado dentro de los dos `.pth` dice
-> `learned` en los dos. **Atarlos está descartado**, con la medición en `docs/bitacora.md`.
+> `learned` en los dos. **Atarlos está descartado**: Adam no es invariante (AGENTS.md, «Lo que no
+> sirve»).
 
 ## 3. Arquitectura
 

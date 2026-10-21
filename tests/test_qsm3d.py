@@ -55,17 +55,21 @@ def rotation_by_permutarion(im, angle):
     return im
 
 
-def bucle_del_script(datos, process_x, process_y, process_z, maxOuterIter, tolUpdate=1.05,
-                     corte=1.4):
-    """`wTDV_QSM_torch_3d.py:83-202` con sus nombres. `process_axis(v, ..., alpha, ...)` pasa a
-    ser `process(v * alpha) / alpha`, que es lo que hace con el volumen. `corte` es el 1.4 de
-    :155."""
+def bucle_del_script(datos, process_x, process_y, process_z, maxOuterIter, tolUpdate=1.15,
+                     finUpdate=1.30):
+    """El bucle del solver 3D de `../tdv` (`wTDV_QSM_torch_3d.py:85-236`), con sus nombres.
+    `process_axis(v, ..., alpha, ...)` pasa a ser `process(v * alpha) / alpha`, que es lo que hace
+    con el volumen.
+    Además de lo que imprime el script (update y RMSE sin máscara) guarda el mapa de cada
+    iteración, que el test enmascara para comparar el NRMSE de `admm_wtdv`, y devuelve el mapa
+    final enmascarado, como :236."""
     device = "cpu"
     kernel = torch.from_numpy(datos["kernel"])
     K2 = torch.from_numpy(datos["K2"])
     weight = torch.from_numpy(datos["W2"])
     Wy = torch.from_numpy(datos["Wy"])
     mask_torch = torch.from_numpy(datos["mascara"])
+    mask_f = mask_torch.float()
     chi_cosmos, cosmos_mask = datos["chi"], datos["mascara_eval"]
     N = kernel.shape
     mu = 0.008
@@ -83,7 +87,7 @@ def bucle_del_script(datos, process_x, process_y, process_z, maxOuterIter, tolUp
     z2 = Wy / weight_mu2
     s2 = torch.zeros(N, dtype=torch.float32, device=device)
 
-    historia = []
+    historia, mapas = [], []
     converged = False
     for t in range(0, maxOuterIter):
         qsm_old = qsm.clone()
@@ -96,7 +100,7 @@ def bucle_del_script(datos, process_x, process_y, process_z, maxOuterIter, tolUp
         numerator = mu2 * kernel * fft_z2_s2 + (mu / 3.0) * (fft_zx_sx + fft_zy_sy + fft_zz_sz)
         qsm = torch.real(torch.fft.ifftn(numerator / denominator)).to(torch.float32)
 
-        if converged and x_update.item() > corte:
+        if converged and x_update.item()>finUpdate:
             break
 
         if t == 0:
@@ -107,18 +111,21 @@ def bucle_del_script(datos, process_x, process_y, process_z, maxOuterIter, tolUp
         x_update = 100*torch.sqrt(torch.mean((qsm-qsm_old) ** 2))/torch.sqrt(torch.mean((qsm) ** 2))
         current_rmse = rmse_del_autor(qsm.cpu().numpy(), chi_cosmos, mask=cosmos_mask)
         historia.append((x_update.item(), current_rmse))
+        mapas.append(qsm.clone())
 
         if x_update.item() < tolUpdate:
             converged = True
 
         FhDFx = torch.real(torch.fft.ifftn(kernel*torch.fft.fftn(qsm))).to(torch.float32)
 
-        vx = qsm + sx
-        vy = qsm + sy
-        vz = qsm + sz
+        vx = (qsm + sx) * mask_f
+        vy = (qsm + sy) * mask_f
+        vz = (qsm + sz) * mask_f
         zz = process_z(vz * alpha) / alpha
         zy = process_y(vy * alpha) / alpha
         zx = process_x(vx * alpha) / alpha
+
+        zx, zy, zz = zx * mask_f, zy * mask_f, zz * mask_f
 
         sx += qsm - zx
         sy += qsm - zy
@@ -127,7 +134,7 @@ def bucle_del_script(datos, process_x, process_y, process_z, maxOuterIter, tolUp
         z2 = (Wy + mu2*(FhDFx+s2)) / weight_mu2
         s2 += FhDFx - z2
 
-    return qsm.numpy(), historia, alpha, t
+    return (qsm * mask_f).numpy(), historia, alpha, t, mapas
 
 
 # --- PROBLEMA Y DENOISERS DE JUGUETE ---------------------------------------------------------
@@ -176,16 +183,19 @@ JUGUETES = [juguete(0), juguete(1), juguete(2)]
 # --- EQUIVALENCIA CON EL SCRIPT --------------------------------------------------------------
 
 def test_admm_k3_es_el_script(sintetico):
-    """Seis iteraciones sin corte: mismo chi, mismos updates, mismos NRMSE y mismo alpha, bit a
-    bit (mismas operaciones en el mismo orden). Medido el 2026-10-12: diferencia 0."""
-    chi, historia, alpha, _ = bucle_del_script(sintetico, *JUGUETES, maxOuterIter=6)
+    """Seis iteraciones sin corte: mismo chi (enmascarado), mismos updates, el NRMSE de cada
+    iteración sobre su mapa enmascarado y mismo alpha, bit a bit (mismas operaciones en el mismo
+    orden)."""
+    chi, historia, alpha, _, mapas = bucle_del_script(sintetico, *JUGUETES, maxOuterIter=6)
     r = qsm3d.admm_wtdv(JUGUETES, sintetico, max_iter=6, device="cpu")
+    mascara = torch.from_numpy(sintetico["mascara"]).float()
 
     assert r["motivo"] == "max_iter" and r["iteraciones"] == 6 and r["k"] == 3
     assert r["alpha"] == alpha
     assert np.array_equal(r["chi"], chi)
     assert r["x_update"] == [h[0] for h in historia]
-    assert r["nrmse"] == [h[1] for h in historia]
+    assert r["nrmse"] == [rmse_del_autor((m * mascara).numpy(), sintetico["chi"],
+                                         sintetico["mascara_eval"]) for m in mapas]
     assert r["nrmse_final"] == r["nrmse"][-1]
     assert r["nrmse_min"] == min(r["nrmse"]) and r["nrmse"][r["it_min"]] == r["nrmse_min"]
 
@@ -199,8 +209,8 @@ def test_corte_mira_el_update_anterior(sintetico):
     assert all(a > b for a, b in zip(u[:5], u[1:5])), "el sintético dejó de bajar: elegir otro t"
     tol, corte = (u[2] + u[3]) / 2, u[3] / 2
 
-    chi, historia, _, t_final = bucle_del_script(sintetico, *JUGUETES, maxOuterIter=8,
-                                                 tolUpdate=tol, corte=corte)
+    chi, historia, _, t_final, _ = bucle_del_script(sintetico, *JUGUETES, maxOuterIter=8,
+                                                    tolUpdate=tol, finUpdate=corte)
     r = qsm3d.admm_wtdv(JUGUETES, sintetico, max_iter=8, tol=tol, corte=corte, device="cpu")
 
     assert t_final == 4 and len(historia) == 4
@@ -209,6 +219,97 @@ def test_corte_mira_el_update_anterior(sintetico):
     assert r["x_update"][:4] == [h[0] for h in historia]
     assert r["nrmse_final"] == pytest.approx(
         rmse_del_autor(chi, sintetico["chi"], sintetico["mascara_eval"]), rel=1e-6)
+
+
+def test_sin_umbral_recorre_todas_las_iteraciones(sintetico):
+    """Con `tol` = -inf, lo que usa la evaluación de train3d.py, el ADMM nunca se da por convergido
+    y recorre sus `max_iter` aunque los umbrales de arriba corten: el mismo chi y las mismas
+    trayectorias con cualquier `corte`."""
+    base = qsm3d.admm_wtdv(JUGUETES, sintetico, max_iter=8, tol=-np.inf, device="cpu")
+    u = base["x_update"]
+    tol, corte = (u[2] + u[3]) / 2, u[3] / 2
+    assert qsm3d.admm_wtdv(JUGUETES, sintetico, max_iter=8, tol=tol, corte=corte,
+                           device="cpu")["motivo"] == "corte"
+    r = qsm3d.admm_wtdv(JUGUETES, sintetico, max_iter=8, tol=-np.inf, corte=corte, device="cpu")
+    assert base["motivo"] == r["motivo"] == "max_iter" and r["iteraciones"] == 8
+    assert np.array_equal(r["chi"], base["chi"])
+    assert r["x_update"] == u and r["nrmse"] == base["nrmse"]
+
+
+def falla_en(malas):
+    """El juguete del eje 1, salvo en las llamadas (desde 1) de `malas`, donde devuelve ceros. La
+    llamada c es el prox de la iteración c - 1, así que mueve el NRMSE de la iteración c."""
+    llamadas = []
+
+    def D(v):
+        llamadas.append(1)
+        return torch.zeros_like(v) if len(llamadas) in malas else juguete(1)(v)
+    return D
+
+
+def admm_sin_umbral(denoiser, sintetico, max_iter, subidas=0):
+    return qsm3d.admm_wtdv([denoiser], sintetico, max_iter=max_iter, tol=-np.inf,
+                           subidas_para_cortar=subidas, device="cpu")
+
+
+def test_para_tras_dos_subidas_con_el_mejor_chi(sintetico):
+    """Desde la llamada 4 el denoiser se rompe: el NRMSE sube, baja una vez y vuelve a subir. Con
+    `subidas_para_cortar` = 2, el ADMM para en la segunda subida seguida y devuelve el chi de menor
+    NRMSE que vio, que no es el de dos iteraciones antes: el mismo, bit a bit, que el de un ADMM
+    cortado en esa iteración sin la regla. La trayectoria guarda también las subidas."""
+    malas = set(range(4, 99))
+    n = admm_sin_umbral(falla_en(malas), sintetico, 10)["nrmse"]
+    sube = [t > 0 and n[t] > n[t - 1] for t in range(len(n))]
+    t_para = next(t for t in range(1, len(n)) if sube[t] and sube[t - 1])
+    t_mejor = min(range(t_para + 1), key=n.__getitem__)
+    assert t_mejor < t_para - 2, "el sintético cambió: el caso ya no distingue «el mejor» de «t-2»"
+
+    r = admm_sin_umbral(falla_en(malas), sintetico, 10, subidas=2)
+    hasta = admm_sin_umbral(falla_en(malas), sintetico, t_mejor + 1)
+    assert r["motivo"] == "empeora" and r["iteraciones"] == t_para + 1
+    assert r["nrmse"] == n[:t_para + 1]
+    assert np.array_equal(r["chi"], hasta["chi"])
+    assert r["nrmse_final"] == r["nrmse_min"] == n[t_mejor] and r["it_min"] == t_mejor
+
+
+def test_una_subida_sola_no_corta(sintetico):
+    """Una sola llamada mala: el NRMSE sube una iteración y vuelve a bajar. Con dos subidas para
+    cortar, el ADMM sigue hasta el techo, igual que sin la regla."""
+    base = admm_sin_umbral(falla_en({4}), sintetico, 10)
+    n = base["nrmse"]
+    assert sum(t > 0 and n[t] > n[t - 1] for t in range(len(n))) == 1 and n[-1] == min(n)
+    r = admm_sin_umbral(falla_en({4}), sintetico, 10, subidas=2)
+    assert r["motivo"] == "max_iter" and r["iteraciones"] == 10
+    assert np.array_equal(r["chi"], base["chi"]) and r["nrmse"] == n and r["nrmse_final"] == n[-1]
+
+
+def test_en_el_techo_devuelve_el_mejor_chi(sintetico):
+    """Si la única subida es la última iteración, el ADMM llega al techo sin cortar, pero devuelve
+    el chi de la anterior, el mejor: `nrmse_final` es siempre el mínimo de lo recorrido."""
+    n = admm_sin_umbral(falla_en({7}), sintetico, 8)["nrmse"]
+    assert n[-1] > n[-2] and all(b < a for a, b in zip(n[:-1], n[1:-1]))
+    r = admm_sin_umbral(falla_en({7}), sintetico, 8, subidas=2)
+    hasta = admm_sin_umbral(falla_en({7}), sintetico, 7)
+    assert r["motivo"] == "max_iter" and r["iteraciones"] == 8
+    assert np.array_equal(r["chi"], hasta["chi"]) and r["nrmse_final"] == n[-2]
+
+
+def test_la_regla_no_toca_un_admm_que_siempre_baja(sintetico):
+    """Si el NRMSE baja en cada iteración, la regla no actúa: el mismo ADMM, hasta el techo."""
+    base = qsm3d.admm_wtdv(JUGUETES, sintetico, max_iter=8, tol=-np.inf, device="cpu")
+    assert all(b < a for a, b in zip(base["nrmse"], base["nrmse"][1:])), "el sintético dejó de bajar"
+    for subidas in (1, 2):
+        r = qsm3d.admm_wtdv(JUGUETES, sintetico, max_iter=8, tol=-np.inf,
+                            subidas_para_cortar=subidas, device="cpu")
+        assert r["motivo"] == base["motivo"] == "max_iter" and r["iteraciones"] == 8
+        assert np.array_equal(r["chi"], base["chi"]) and r["nrmse"] == base["nrmse"]
+        assert r["nrmse_final"] == r["nrmse_min"] == base["nrmse"][-1]
+
+
+def test_la_regla_pide_la_referencia(sintetico):
+    datos = {k: v for k, v in sintetico.items() if k not in ("chi", "mascara_eval")}
+    with pytest.raises(ValueError, match="chi"):
+        qsm3d.admm_wtdv(JUGUETES, datos, max_iter=2, subidas_para_cortar=2, device="cpu")
 
 
 def test_k1_es_k3_con_el_mismo_denoiser(sintetico):
@@ -395,11 +496,27 @@ def test_sin_tf32_apaga_y_restaura_los_flags():
             previos)
 
 
+def test_el_denoiser_ve_solo_el_cerebro(sintetico):
+    """Lo que recibe cada denoiser vale 0 fuera de `mascara` en todas las iteraciones, y el chi
+    final también, aunque adentro no lo sea. Que la salida vaya por la máscara lo prueba
+    `test_admm_k3_es_el_script`, bit a bit contra el script."""
+    entradas = []
+
+    def guarda(v):
+        entradas.append(v.clone())
+        return JUGUETES[0](v)
+    r = qsm3d.admm_wtdv([guarda], sintetico, max_iter=4, device="cpu")
+    afuera = ~sintetico["mascara"]
+    assert len(entradas) == 4 and all((e.numpy()[afuera] == 0).all() for e in entradas)
+    assert all(np.abs(e.numpy()[~afuera]).max() > 0 for e in entradas)
+    assert (r["chi"][afuera] == 0).all() and np.abs(r["chi"][~afuera]).max() > 0
+
+
 def test_punto_qsm3d_es_la_entrada_del_primer_denoiser(sintetico):
     """El volumen entero es, bit a bit, lo que recibe el primer denoiser de un ADMM de cuatro
     iteraciones, y un cubo es su ventana centrada en la caja de la máscara. Contra la fórmula
-    cerrada en float64, chi_0 = F⁻¹[mu2·D·F(W²·phase/(W² + mu2))/(mu2·D² + mu)] y alpha con la
-    desviación con n − 1 de `torch.std`: la del ADMM, no la `np.std` del script 2D."""
+    cerrada en float64, M·chi_0 con chi_0 = F⁻¹[mu2·D·F(W²·phase/(W² + mu2))/(mu2·D² + mu)] y alpha
+    con la desviación con n − 1 de `torch.std`: la del ADMM, no la `np.std` del script 2D."""
     entradas = []
 
     def guarda(v):
@@ -426,7 +543,7 @@ def test_punto_qsm3d_es_la_entrada_del_primer_denoiser(sintetico):
     z2 = sintetico["Wy"].astype(np.float64) / (sintetico["W2"].astype(np.float64) + qsm3d.MU2)
     chi_0 = np.real(np.fft.ifftn(qsm3d.MU2 * D * np.fft.fftn(z2) / (qsm3d.MU2 * K2 + qsm3d.MU)))
     alpha = qsm3d.TARGET_STD / chi_0[mascara].std(ddof=1)
-    np.testing.assert_allclose(entero, alpha * chi_0, rtol=0,
+    np.testing.assert_allclose(entero, alpha * chi_0 * mascara, rtol=0,
                                atol=1e-5 * np.abs(alpha * chi_0).max())
     assert entero[mascara].std(ddof=1) == pytest.approx(qsm3d.TARGET_STD, rel=1e-5)
     with pytest.raises(ValueError, match="lado"):

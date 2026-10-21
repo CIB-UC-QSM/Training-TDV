@@ -47,7 +47,7 @@ PROYECTO = "training-tdv3d"       # supuesto: el nombre lo decide el autor, con 
 HOST = "https://api.wandb.ai"     # el de wandb 0.30 cuando WANDB_BASE_URL no dice otro
 # Cuánto espera `wandb.init` antes de rendirse; el default de wandb es 90 s. Supuesto: online no
 # se midió (no hay credencial en esta máquina); offline, la primera apertura del proceso tarda
-# 0.29 s y las demás 0.046 (docs/mediciones/costo-seguimiento.txt, 2026-10-12).
+# 0.29 s y las demás 0.046 (medido el 2026-10-12).
 INIT_TIMEOUT = 30.0
 
 
@@ -64,8 +64,8 @@ def _hay_credencial() -> bool:
     except (OSError, netrc.NetrcParseError):
         return False
     # Sin password, wandb descarta la entrada ("with no API key", `wbauth/wbnetrc.py`) y pregunta:
-    # contarla colgaba `auto` en el prompt (visto bajo una pty el 2026-10-12,
-    # docs/mediciones/seguimiento-cuelgues.txt). `authenticators` cae también en `default`.
+    # contarla colgaba `auto` en el prompt (visto bajo una pty el 2026-10-12). `authenticators`
+    # cae también en `default`.
     return entrada is not None and bool(entrada[2])
 
 
@@ -301,8 +301,8 @@ def cierra(run) -> None:
 
 
 # --- MÉTRICAS --------------------------------------------------------------------------------
-# Columna de `traza.npy` -> nombre en W&B; las columnas, en el bloque final de `train3d.py`
-# (TRAZA). La 8 y la 9, rechazado y rebobinado (0/1), entran acumuladas por `metricas_traza`.
+# Columna de `traza.npy` -> nombre en W&B; las columnas, en docs/porque-del-codigo.md, TRAZA.
+# La 8 y la 9, rechazado y rebobinado (0/1), entran acumuladas por `metricas_traza`.
 COLUMNAS_TRAZA = {
     0: "train/loss", 1: "train/T", 2: "train/dT", 3: "train/lambda", 4: "train/dlambda",
     5: "train/grad_norm", 6: "train/grad_mediana", 7: "train/amp", 10: "train/grad_norm_micro",
@@ -355,9 +355,9 @@ def metricas_traza(traza: np.ndarray, it: int) -> dict[str, float]:
 # clave sólo ahí, `auto` sale offline. Tampoco ve su `base_url` (el que deja `wandb login
 # --host`): con él en otro host y el .netrc sólo para api.wandb.ai, `_hay_credencial` decía que sí
 # y init se quedaba en el prompt; lo mismo con una entrada del .netrc sin password (las dos, vistas
-# bajo una pty el 2026-10-12, docs/mediciones/seguimiento-cuelgues.txt). Por eso, antes de init
-# online, se le pregunta a wandb con `wandb.login(prompt=False, verify=False)`, que resuelve su
-# host y sus fuentes sin prompt ni red; si dice que no, `auto` va offline sin probar online.
+# bajo una pty el 2026-10-12). Por eso, antes de init online, se le pregunta a wandb con
+# `wandb.login(prompt=False, verify=False)`, que resuelve su host y sus fuentes sin prompt ni red;
+# si dice que no, `auto` va offline sin probar online.
 # Con un servidor que no contesta, init online tarda INIT_TIMEOUT más ~10 s (40.6 s medido) y
 # cae a offline; con uno que contesta 401, 0.6 s.
 # `console="off"`: el log de `train3d.py` (stdout, al journal o a tmux) es la fuente, y la
@@ -383,9 +383,9 @@ def metricas_traza(traza: np.ndarray, it: int) -> dict[str, float]:
 #   - json y `desde` < paso: una corrida NUEVA, y el id viejo pasa a `descartadas`. Es el análogo
 #     de `aparta` en `train3d.py`: lo registrado después de `desde` es de un linaje que no sigue.
 #     Reabrir la misma no serviría: W&B descarta sin aviso un paso menor que el último (medido
-#     offline, docs/mediciones/costo-seguimiento.txt), así que la corrida guardaría el tramo del
-#     linaje viejo y tiraría el del nuevo hasta pasarlo, sin que nada se ponga rojo. Arrancar de
-#     cero (`desde` = 0) en un `--out` usado cae acá.
+#     offline, 2026-10-12), así que la corrida guardaría el tramo del linaje viejo y tiraría el
+#     del nuevo hasta pasarlo, sin que nada se ponga rojo. Arrancar de cero (`desde` = 0) en un
+#     `--out` usado cae acá.
 #   - `padre` en otro directorio: una rama. Corrida nueva, con group = el grupo del tronco o, si
 #     no tiene, su nombre (el de su json o el de su directorio), y config["padre"] = la ruta del
 #     estado, config["padre_id"] = el id del tronco. Reanudar la rama en su propio `--out` es el
@@ -405,20 +405,21 @@ def metricas_traza(traza: np.ndarray, it: int) -> dict[str, float]:
 # un disco lleno o una imagen mal formada cuestan el seguimiento, nunca la corrida.
 # Varias llamadas con el mismo paso van a la misma fila, y la fila se cierra cuando llega un paso
 # mayor o en `cierra`: un corte pierde, como mucho, la última fila. La traza la tiene.
-# Dónde va cada llamada en `train3d.py` (el porqué, en su bloque final, SEGUIMIENTO):
-#   - `abre(out, vars(args) | commit, modo=..., padre=args.reanudar, desde=it0)` después de
-#     `lotes = iter(loader)`: los workers ya están creados, con `persistent_workers`, y no se
-#     forkea un proceso con los hilos de wandb vivos (derivado; no se vio fallar).
+# Dónde va cada llamada en `train3d.py` (el porqué, en docs/porque-del-codigo.md, SEGUIMIENTO):
+#   - `abre(out, vars(args) | commit, modo=..., padre=args.reanudar, desde=it0)`, en
+#     `abre_seguimiento`, después de `iter(loader)`: los workers ya están creados, con
+#     `persistent_workers`, y no se forkea un proceso con los hilos de wandb vivos (derivado; no
+#     se vio fallar).
 #   - cada --log-every, `registra(run, metricas_traza(traza, it) | extra, it)`, con extra =
 #     train/grad_norm_max (el max|g| del log en el intervalo: un estallido, que es de una
 #     iteración, no se pierde entre dos muestras), train/s_por_it y train/vram_pico_gib. Por
-#     iteración también entraba: medido offline (docs/mediciones/costo-seguimiento.txt,
-#     2026-10-12, con load average 61 en 32 CPU), 0.185 ms de mediana por llamada y p99
-#     0.335 ms, contra ~9 s de una iteración en la 5070 Ti; 1 337 B por fila de 15 métricas, 53 MB
-#     a 40 000 iteraciones (derivado), más ~0.64 MB de métricas de sistema por hora de corrida
-#     (derivado: un registro de 1 kB cada 5.8 s). Un estado pesa ~51 MB en la 40 000 (train3d.py,
-#     bloque final). Se eligió --log-every porque la traza ya tiene todas las filas y W&B
-#     muestra lo mismo que el log.
+#     iteración también entraba: medido offline (2026-10-12, con load average 61 en 32 CPU),
+#     0.185 ms de mediana por llamada y p99 0.335 ms, contra ~9 s de una iteración en la
+#     5070 Ti; 1 337 B por fila de 15 métricas, 53 MB a 40 000 iteraciones (derivado), más
+#     ~0.64 MB de métricas de sistema por hora de corrida (derivado: un registro de 1 kB cada
+#     5.8 s). Un estado pesa ~51 MB en la 40 000 (docs/porque-del-codigo.md, RECETA 3D). Se
+#     eligió --log-every porque la traza ya tiene todas las filas y W&B muestra lo mismo que el
+#     log.
 #   - en cada validación, `registra` con val/* y `registra_imagenes` con val/denoising; en cada
 #     evaluación QSM, qsm/* y qsm/reconstruccion.
 #   - al final, después de `estado.json`, `resumen(run, <estado.json>)` y `cierra(run)`.

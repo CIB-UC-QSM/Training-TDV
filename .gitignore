@@ -29,21 +29,16 @@ checkpoints/*
 !checkpoints/Oficiales/*.pth
 !checkpoints/Entrenados/*.pth
 
-# Datasets: las imágenes no se versionan; las listas, los README y los scripts que arman ldm100k y
+# Datasets: las imágenes no se versionan; las listas, los README y los scripts que arman
 # ldm100k3d sí. Para re-incluir algo hay que excluir el CONTENIDO (dir/*) y no el directorio, porque
 # git no entra en un directorio excluido.
 datasets/*
-!datasets/cache_ldm100k.py
 !datasets/cache_ldm100k3d.py
 !datasets/mascaras_ldm100k3d.py
 !datasets/bsds500/
 datasets/bsds500/*
 !datasets/bsds500/cbsd68.txt
 !datasets/bsds500/README.md
-!datasets/ldm100k/
-datasets/ldm100k/*
-!datasets/ldm100k/lista_eval.txt
-!datasets/ldm100k/README.md
 !datasets/ldm100k3d/
 datasets/ldm100k3d/*
 !datasets/ldm100k3d/lista_*.txt

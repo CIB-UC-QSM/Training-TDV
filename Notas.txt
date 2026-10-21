@@ -1,0 +1,56 @@
+Cada volumen se normaliza dividiendo por su percentil 99.5 y se recorta a [0, 1]. Los 2 000 de entrenamiento se eligieron mitad por cobertura (k-center sobre miniaturas) y mitad al azar. 
+    Los 12 de validación son los más cercanos a cada centroide de un k-means y no se cruzan con los de entrenamiento.
+
+Los cubos 100 % cerebro tienen un costo. A 48³ los cubos cubren el 66 % del cerebro, pero sólo el 18.5 % de la franja cortical (a 6 mm o menos del borde): la red casi no ve el borde del 
+    cerebro, y el ADMM sí se lo pasa.
+
+Nombres de los pesos: hoy no carga.
+   - Nosotros guardamos R.K1, R.mb…, R.KN bajo model.
+   - QSM-TDV espera analysis, macro_blocks, energy_head bajo model_state_dict.
+   - Un conversor renombra 44 pesos y rehace 12 buffers. Existe (scripts/compat_qsm_tdv/a_qsm_tdv.py, en tu checkout), pero no está en git.
+   
+Bordes del volumen: carga, pero calcula otra cosa.
+   - TDV baja la resolución con una convolución aprendida y un desenfoque, y sube con la transpuesta de otra convolución, con pesos propios.
+   - En el interior las dos implementaciones coinciden. En las caras no: nosotros (como VLOGroup) desenfocamos el kernel y espejamos la entrada 3 vóxeles; ellos desenfocan la salida y espejan 2.
+   - Ya convertido, ∇R difiere 1.2–3.6 % en norma y hasta 7–16 % del máximo en las caras. A más de 13–15 vóxeles de una cara, la diferencia es menor que una milésima del máximo.
+   - Se midió en cubos de 40³–96³ con pesos tempranos. Ni un volumen entero ni una red entrenada están medidos.
+
+La escala de χ. Apareció hoy, al revisar el código para esta respuesta.
+   - Nuestro ADMM multiplica χ por un α fijo antes de la red y lo divide a la salida. α se calcula una vez, para que la primera reconstrucción tenga desviación 0.06 en el cerebro; en COSMOS vale 4.86.
+   - QSM-TDV no reescala χ: la red vería una amplitud ~4.86 veces menor que en nuestra validación.
+   - Importa porque TDV no es lineal: bajar target_std de 0.06 a 0.03 empeoró el NRMSE 1.4–1.7 puntos, y ahí equivaldría a ~0.012, que nunca se probó.
+
+Sólo se comparan las subidas: el lote fijo y la validación son cubos distintos.
+- La cadena aprende. La pérdida del lote fijo bajó de 1 072.7 (lo mismo que no limpiar nada, ≈1 063) a 48.4. Casi todo es aprender a limpiar: el control también baja, hasta ~62–64.
+    Lo propio del lote fijo es lo que baja desde ahí.
+- No memoriza el lote, ni se espera que lo haga. Una energía convolucional de 1.16 M parámetros no puede copiar los 442 000 valores de ruido.
+- La validación distingue lo repetido de lo nuevo. Desde la 500, el lote fijo sube +1.50 dB, su validación sólo +0.37 y el control +0.79.
+    Se cuenta desde la 500 porque el control tuvo un pico de gradiente en la 186, sin disyuntor que lo frenara. Su validación de la 250 estaba hundida (28.93 dB, contra 31.39 en la 500).
+
+
+
+
+
+prep3d-sobreajuste   [2] prueba de sobreajuste: el mismo lote de 4 cubos de 48^3 (4 volúmenes) con
+                     el mismo ruido en cada iteración, 1 500 iteraciones. Código: commit e96f3d8.
+prep3d-control       [2] su control: mismas banderas y semilla, con un lote nuevo en cada iteración
+                     (1 000 volúmenes). Código: commit e96f3d8.
+prep3d-punta         [3] prueba de punta a punta: las banderas de la corrida larga recortadas a 200
+                     iteraciones, con evaluación (PSNR y QSM en COSMOS) y estado cada 100.
+                     Código: commit c88a255 (el final, con el que se lanza la corrida larga).
+prep3d-reanuda       [4] la anterior reanudada desde su estado de la iteración 100, en otra carpeta,
+                     después de que terminara la original. Mismo código.
+prep3d-mil-s1, -s2   [5] las banderas de la corrida larga durante 1 000 iteraciones, semillas 1 y 2,
+                     con la razón del disyuntor por defecto (5), evaluación y estado cada 250 y la
+                     lista de 1 000 volúmenes (para que las dos entraran a la vez en RAM). c88a255.
+prep3d-g10-s1, -s2   [5] lo mismo con la razón en 10 (--guard 10). Se cortaron el 18 a las ~08:01 por
+                     una caída de la máquina (s1 en la 800, s2 en la 825): no tienen estado.json, y
+                     traza.npy, history.json y qsm.jsonl llegan a la 750 (el log, hasta el corte).
+prep3d-g10-s2-2500   [6] rama de prep3d-g10-s2 desde su estado de la iteración 500, con lr constante
+                     (--meseta 0) hasta la 2 500, evaluación y estado cada 250. Las filas 1-500 de
+                     traza.npy son las heredadas de la corrida madre. c88a255.
+
+systemd-run --user --collect --unit tdv-3d-largo -p WorkingDirectory=$PWD bash -c \
+".venv/bin/python -u train3d.py --out runs/3d-largo --iterations 100000 --hitos \
+--meseta 3 --guard 10 --mascara-cerebro --seguimiento online --eval-every 2500 \
+--guardar-cada 2500 > runs/3d-largo.log 2>&1"

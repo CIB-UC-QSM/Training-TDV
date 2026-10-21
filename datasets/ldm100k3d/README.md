@@ -25,17 +25,18 @@ listas `lista_*.txt`; el script que arma todo está un nivel arriba, en
 | `escaneo/escalares.npz` | por sujeto, percentil 99.5 crudo, fracción de tejido, fracción oscura y cuantiles 10/50/90 en la caja central, vóxeles saturados; `ok` marca los que se leyeron |
 | `seleccion.npz` | la PCA de las miniaturas y los índices de la selección (control de calidad, evaluación, orden del k-center voraz); queda en la `--salida` de `selecciona` |
 | `lista_eval.txt` | 12 sujetos, uno por línea: el más cercano a cada centroide de un k-means en el espacio PCA |
-| `lista_train_<N>.txt` | N sujetos de entrenamiento (2 000 y 8 000), disjuntos de los de evaluación |
+| `lista_train_<N>.txt` | N sujetos de entrenamiento (1 000, 2 000 y 8 000), disjuntos de los de evaluación. La de 1 000 es un subconjunto de la de 2 000, sus líneas 1–500 y 1 001–1 500, para las pruebas cortas: dos corridas con 2 000 no entraban en la RAM de la máquina del autor |
 | `images/<split>/sub-XXXXXX.npy` | float16 `[D, H, W]` en [0, 1], recortado a la caja del tejido con 4 vóxeles de margen |
 | `mascaras/<split>/sub-XXXXXX.npy` | bool, de la misma forma que su `images/<split>/sub-XXXXXX.npy` y alineada vóxel a vóxel: el cerebro según deepbet ∩ HD-BET sin TTA. La lee `train3d.py --mascara-cerebro` |
 | `mascaras-nifti/<herramienta>/sub-XXXXXX.npz` | la máscara de cada herramienta en el espacio del NIfTI (160×224×160), comprimida: el paso intermedio de las de arriba |
 
-Cada `.npy` de `images/` está normalizado como los cortes de [`../ldm100k`](../ldm100k/README.md):
-dividido por el percentil 99.5 de los vóxeles positivos de su volumen y recortado a [0, 1].
+Cada `.npy` de `images/` está normalizado con `normaliza` de
+[`../cache_ldm100k3d.py`](../cache_ldm100k3d.py): dividido por el percentil 99.5 de los vóxeles
+positivos de su volumen y recortado a [0, 1].
 
-Medido el 2026-10-08 sobre 200 volúmenes sorteados (crudo en
-`docs/mediciones/tejido-ldm100k3d.txt`): la caja del tejido mide 144–160 × 195–223 × 144–154 y en
-el eje 2 toca el borde del campo en los 200; el 38–51 % (p1–p99) de los vóxeles crudos vale exactamente 0.
+Medido el 2026-10-08 sobre 200 volúmenes sorteados: la caja del tejido mide 144–160 × 195–223 ×
+144–154 y en el eje 2 toca el borde del campo en los 200; el 38–51 % (p1–p99) de los vóxeles
+crudos vale exactamente 0.
 Un volumen cacheado pesa 9.9 MB de mediana (10.9 MB entero), así que 2 000 son ~19 GB en RAM y
 8 000, ~78 GB.
 
@@ -55,7 +56,7 @@ Un volumen cacheado pesa 9.9 MB de mediana (10.9 MB entero), así que 2 000 son 
 
 Cobertura, la distancia en el espacio PCA de cada sujeto del corpus a su elegido más cercano,
 medida el 2026-10-08 sobre los 100 000 con los defaults (`--z 10 --n 2000 8000`), que son los
-que arman las listas de esta carpeta (crudo en `docs/mediciones/seleccion-ldm100k3d.txt`):
+que arman las listas de esta carpeta:
 
 | N | regla | mediana | p99 | máx |
 |---|---|---|---|---|
@@ -68,9 +69,8 @@ que arman las listas de esta carpeta (crudo en `docs/mediciones/seleccion-ldm100
 
 La mezcla queda cerca del sorteo en la mediana y cerca del voraz en la cola: la de 2 000 cubre las
 colas mejor que un sorteo de 8 000 (máximo 5.999 contra 8.378). Con `--z 6 --n 500 2000 8000`,
-como se corrió `scripts/selecciona_ldm100k.py` (`docs/mediciones/variedad-ldm100k.txt`), las
-listas son otras y la cobertura casi la misma: máximo 5.987 la mezcla de 2 000 contra 7.921 el
-sorteo de 8 000.
+como se corrió `scripts/selecciona_ldm100k.py`, las listas son otras y la cobertura casi la
+misma: máximo 5.987 la mezcla de 2 000 contra 7.921 el sorteo de 8 000.
 
 Todo sale de un generador con semilla fija (`--seed 20261008`) consumido en orden, así que la lista
 de un N depende de la lista `--n` completa: `--n 2000 8000` y `--n 500 2000 8000` dan listas de
@@ -111,9 +111,10 @@ cachearla: `deepbet` y `hdbet`, cada uno en el Python de su propio entorno (cóm
 docstring del script), dejan su máscara en `mascaras-nifti/`; `combina`, en el `.venv`, las
 interseca, las recorta con la misma caja que la cache y escribe `mascaras/<split>/`, verificando
 que cada volumen cacheado sea, bit a bit, el que sale del NIfTI con esa caja. Los comandos y los
-tiempos (0.67 s por cerebro en GPU), en el docstring del script. Las de `val` no las usa el
-entrenamiento: se generaron el 2026-10-12 para verificar la alineación
-(`docs/mediciones/mascaras-val-ldm100k3d.txt`).
+tiempos (0.67 s por cerebro en GPU), en el docstring del script. Las de `val` las usa la
+validación: con `--mascara-cerebro`, `val/psnr_cerebro` sale de ellas, `best.pth` se elige con él
+y la corrida no arranca si falta alguna. Se generaron el 2026-10-12, con la alineación
+verificada.
 
 ## Cómo se entrena sobre esto
 

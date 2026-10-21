@@ -1,9 +1,0 @@
-evento             t       lr   T antes  umbral(t)     caida  caida/lr  tope(t)/lr  veredicto
-v1  @5000       5000  4.0e-04   0.01022    0.01261   0.00901      22.5        31.5  vulnerable sobrevivio  <<< NO CUADRA
-v1  @19750     19750  4.0e-04   0.00450    0.01265   0.00450      11.2        31.6  vulnerable MURIO       OK
-v4  @8000       8000  4.0e-04   0.01138    0.01265   0.00413      10.3        31.6  vulnerable sobrevivio  <<< NO CUADRA
-v4  @69500     69500  1.0e-04   0.02257    0.00316   0.00605      60.5        31.6  a salvo    sobrevivio  OK pico-unico INSUFICIENTE
-v5  @2500       2500  4.0e-04   0.00906    0.01212   0.00906      22.6        30.3  vulnerable MURIO       OK
-v6  @2000       2000  4.0e-04   0.00847    0.01176   0.00847      21.2        29.4  vulnerable MURIO       OK
-v7  @4250       4250  4.0e-04   0.01018    0.01256   0.00918      22.9        31.4  vulnerable piso t_min  OK
-xfp32 @500       500  4.0e-04   0.01187    0.00794   0.01168      29.2        19.8  a salvo    MURIO       <<< NO CUADRA pico-unico INSUFICIENTE

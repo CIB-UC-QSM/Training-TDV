@@ -40,7 +40,8 @@ def file_list() -> list[str]:
 
 
 def test_official_config_matches_documented_values():
-    """La config de docs/bitacora.md debe seguir siendo la del archivo."""
+    """La config del checkpoint oficial en color es la del paper: S = 10, 32 features, tres
+    bloques y tres escalas."""
     checkpoint = torch.load(CHECKPOINTS / "tdv3-3-25-f32-color.pth", map_location="cpu", weights_only=False)
     config = checkpoint["config"]
     assert config["S"] == 10

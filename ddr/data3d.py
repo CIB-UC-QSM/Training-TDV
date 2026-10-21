@@ -40,16 +40,15 @@ __all__ = [
 
 
 # --- TEJIDO Y RECORTES -----------------------------------------------------------------------
-# Medidos sobre 200 volúmenes de LDM_100k normalizados con `scripts/mide_tejido_ldm100k3d.py`
-# (crudo en docs/mediciones/tejido-ldm100k3d.txt); los números, en el bloque final.
-UMBRAL_TEJIDO = 0.05   # el de `datasets/cache_ldm100k.py`: sobre el 5 % de la norma, es tejido
-MIN_TEJIDO = 0.35      # el `--min-cerebro` de los cortes 2D: rechaza el 6.5 % de los parches 48^3
-INTENTOS = 12          # el de `elige_corte` en 2D: en el peor volumen, P(fallan los 12) = 3e-11
+# Medidos sobre 200 volúmenes de LDM_100k normalizados con `scripts/mide_tejido_ldm100k3d.py`;
+# los números, en el bloque final.
+UMBRAL_TEJIDO = 0.05   # el de `datasets/cache_ldm100k3d.py`: sobre el 5 % de la norma, es tejido
+MIN_TEJIDO = 0.35      # el piso de los cortes 2D: rechaza el 6.5 % de los parches 48^3
+INTENTOS = 12          # los de los cortes 2D: en el peor volumen, P(fallan los 12) = 3e-11
 EVAL_RECORTE = 128     # entra en la caja del tejido de los 200: su mínimo por eje es 144, 195, 144
 
 # --- CUBOS DE CEREBRO ------------------------------------------------------------------------
-# Medido el 2026-10-09 sobre 24 sujetos (docs/bitacora.md, «Cubos 100 % cerebro»; crudo en
-# docs/mediciones/cobertura-cubos-cerebro.txt y verificacion-cubos-cerebro.txt): bloque final.
+# Medido el 2026-10-09 sobre 24 sujetos (docs/bitacora.md, «Datos: LDM_100k en 3D»): bloque final.
 MARGEN_CEREBRO = 1     # cubos 48^3 que tocan lo excluido por la de con TTA: 0.3 % con 0, 0.0 con 1
 
 
@@ -113,7 +112,7 @@ def esquinas_validas(mascara: np.ndarray, patch: int,
     tipo = np.uint32 if np.prod(grilla, dtype=np.int64) <= 2 ** 32 else np.int64
     q = patch + 2 * margen
     # Las sumas, sólo en la caja de la máscara: 2.7x más rápido que en todo el volumen (0.027
-    # contra 0.072 s en un cerebro, docs/mediciones/mascaras-val-ldm100k3d.txt).
+    # contra 0.072 s en un cerebro, medido el 2026-10-12).
     caja = []
     for eje in range(3):
         idx = np.flatnonzero(mascara.any(axis=tuple(a for a in range(3) if a != eje)))
@@ -197,7 +196,7 @@ class PatchDataset3D(Dataset):
         self.signo, self.ganancia = signo, ganancia
         self.files = [Path(f) for f in files]
         # float16 en RAM, la mitad que float32: 9.9 MB de mediana por volumen de LDM_100k
-        # recortado (docs/mediciones/tejido-ldm100k3d.txt).
+        # recortado (medido el 2026-10-08 sobre 200).
         self.volumes = [_carga(f, np.float16) for f in self.files]
         for f, v in zip(self.files, self.volumes):
             if min(v.shape) < patch_size:
@@ -315,10 +314,10 @@ class VolumeDataset3D(Dataset):
 '''
 # --- TEJIDO Y RECORTES -----------------------------------------------------------------------
 # Un vóxel es tejido si supera UMBRAL_TEJIDO = 0.05 de la norma, la misma definición que
-# `datasets/cache_ldm100k.py` usa para elegir cortes y `datasets/cache_ldm100k3d.py` para recortar.
+# `datasets/cache_ldm100k3d.py` usa para recortar.
 # Medido el 2026-10-08 sobre 200 volúmenes de LDM_100k sorteados (semilla 20261008), normalizados
 # por el percentil 99.5 y recortados a la caja del tejido con MARGEN = 4 (el de la cache), con
-# `scripts/mide_tejido_ldm100k3d.py`; el crudo, en docs/mediciones/tejido-ldm100k3d.txt:
+# `scripts/mide_tejido_ldm100k3d.py`:
 #   - el 38–51 % de los vóxeles crudos (p1–p99) vale exactamente 0, y fuera de la caja el p99
 #     normalizado es 0.0098: lo que queda afuera es aire.
 #   - la caja mide 144–160 x 195–223 x 144–154 y toca el borde del campo en el eje 2 en los 200:
@@ -339,7 +338,7 @@ class VolumeDataset3D(Dataset):
 # --- CUBOS DE CEREBRO ------------------------------------------------------------------------
 # LDM_100k no está skull-stripped: con el filtro de tejido, de los parches 48^3 que pasan sólo el
 # 4.0 % [2.8–6.2] cae entero en el cerebro, y el parche medio es 60 % cerebro; el resto es cráneo,
-# cuero cabelludo, aire y LCR externo (docs/bitacora.md, «Cubos 100 % cerebro», n = 24). Con
+# cuero cabelludo, aire y LCR externo (docs/bitacora.md, «Datos: LDM_100k en 3D», n = 24). Con
 # `mascaras` el parche sale entero del cerebro. La máscara es deepbet ∩ HD-BET sin TTA, con huecos
 # rellenos (por qué la intersección, en `datasets/mascaras_ldm100k3d.py`).
 # Una esquina c es válida si el cubo (P + 2·MARGEN_CEREBRO)^3 que arranca en c − MARGEN_CEREBRO
@@ -351,13 +350,13 @@ class VolumeDataset3D(Dataset):
 # TTA difieren en una cáscara de 1–1.4 mm (p99 de la distancia, mediana sobre 24). Con margen 0,
 # el 0.3 % [0.1–1.7] de los cubos 48^3 de esta máscara toca algo que la versión con TTA deja
 # afuera; con 1, el 0.0 % [0.0–0.3]. Con 2 se pierde otro 22 % de esquinas y la franja cubierta
-# baja de 18.5 a 8.6 % (docs/mediciones/cobertura-cubos-cerebro.txt).
-# Qué cubre, con e = 1 y la máscara con TTA (n = 24, mismo crudo): a 48^3, el 66.3 % [60.5–71.8]
+# baja de 18.5 a 8.6 % (medido el 2026-10-09).
+# Qué cubre, con e = 1 y la máscara con TTA (n = 24, misma medición): a 48^3, el 66.3 % [60.5–71.8]
 # del cerebro y el 18.5 % [14.5–22.7] de la franja cortical (≤ 6 mm del borde, el 27.8 % del
 # cerebro), con ~60 000 esquinas por cerebro; a 32^3, el 80.1 % y el 38.1 %, con ~250 000. Los
 # cubos que entran se juntan en el centro: con 32^3, sólo el 0.25 % de lo que ve el entrenamiento
 # cae en la franja. Sin TTA hay 9 % menos esquinas a 48^3 (54 850 de mediana; 54 854 en los 12 de
-# evaluación, docs/mediciones/mascaras-val-ldm100k3d.txt).
+# evaluación, medido el 2026-10-12).
 # Un volumen sin esquinas queda fuera del sorteo, con un aviso. Las esquinas quedan como índices
 # planos uint32 (~0.2 MB por volumen a 48^3) y la máscara se descarta; leerla y contarlas cuesta
 # 0.06 s por volumen (medido el 2026-10-12 sobre los 12 de evaluación, CPU).
@@ -379,16 +378,16 @@ class VolumeDataset3D(Dataset):
 #   `augment`;  4. el signo, si `signo`;  5. el factor log-uniforme en [1/g, g], si `ganancia` > 1.
 # Con `mascaras`, 1 y 2 son otros: el volumen, uniforme entre los que tienen esquinas, y un
 # índice de su lista de esquinas válidas; 3 a 5 siguen igual y en el mismo orden. Sin `mascaras`
-# el flujo es el de antes de que existieran, bit a bit: `tests/test_data3d.py` lo fija con el
-# sha256 de 50 parches en tres configuraciones, calculado con el código anterior.
+# el flujo no depende de ellas, bit a bit: `tests/test_data3d.py` lo fija con el sha256 de 50
+# parches en tres configuraciones.
 # Los aumentos de intensidad van al final para que prenderlos no cambie la geometría: un brazo con
 # `signo` ve los mismos parches que su control, multiplicados por ±1. Que la semilla sea del índice
 # global hace que reanudar sea pasar `offset = it * lote` y que un worker no dependa de otro.
 # `VolumeDataset3D` guarda los recortes en float32 (12 de 128^3 son 100 MB) y la caja del tejido se
 # recalcula sobre el volumen cacheado, que ya está recortado a la caja con margen: su centro es el
 # de la cabeza, no el del campo de visión. Con `mascaras`, la de cerebro sale de la MISMA ventana,
-# que sigue saliendo del tejido y no de la máscara: el recorte es el mismo con y sin ella, y los
-# PSNR de antes no cambian (test). Es la región que ve el entrenamiento con --mascara-cerebro, que
+# que sale del tejido y no de la máscara: el recorte es el mismo con y sin ella, y su PSNR
+# también (test). Es la región que ve el entrenamiento con --mascara-cerebro, que
 # no ve cráneo ni aire, mientras el recorte entero sí los tiene.
 
 ---------------------------------------------------------------------------------------------------
