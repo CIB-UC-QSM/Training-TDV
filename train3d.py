@@ -54,18 +54,18 @@ from types import SimpleNamespace
 import numpy as np
 import torch
 from torch.nn.utils import get_total_norm
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 
 from ddr import seguimiento
 from ddr.data3d import EVAL_RECORTE, PatchDataset3D, VolumeDataset3D, add_noise, add_noise_ciego
 from ddr.model import VNet3D
-from ddr.qsm3d import (LADO_ESTABILIDAD, UMBRAL_ESTABILIDAD, admm_wtdv, carga_cosmos,
-                       denoiser_3d, estabilidad, lamina_denoising, lamina_qsm, punto_qsm3d)
+from ddr.qsm3d import (LADO_ESTABILIDAD, ORIENTACION_T1, SIM2_ARCHIVO, TARGET_STD,
+                       UMBRAL_ESTABILIDAD, admm_wtdv, carga_cosmos, carga_sim2, denoiser_3d,
+                       estabilidad, lamina_denoising, lamina_qsm, metricas_chi, punto_qsm3d,
+                       residuo_dato_pct)
 from evaluate import evaluate_denoising3d
-from train import CHANNELS as CHANNELS_BSDS
-from train import PATCH_SIZE as PATCH_SIZE_BSDS
-from train import (BETAS, DATA_RANGE, DELTA_ADAM, FEATURES, GUARD_ABS, GUARD_LIMPIAS, GUARD_RATIO,
-                   GUARD_RESPALDO, GUARD_SEGUIDOS, GUARD_VENTANA, LAMBDA_INIT, LR, LR_HALVE_EVERY,
+from train import (BETAS, DATA_RANGE, DELTA_ADAM, FEATURES, GUARD_LIMPIAS,
+                   GUARD_SEGUIDOS, GUARD_VENTANA, LAMBDA_INIT, LR, LR_HALVE_EVERY,
                    MACRO_BLOCKS, MODES, NOISE_SCALE, SCALES, SIGMA, STEPS, T_INIT, rebobina,
                    rechaza_lote, respalda, vnet_config)
 
@@ -105,9 +105,14 @@ SONDA_ITERACIONES = 4
 SONDA_DESCARTADAS = 1
 
 # --- DISYUNTOR EN 3D -------------------------------------------------------------------------
-# La pérdida es una SUMA por parche, así que |g| crece con los valores sumados: la cota absoluta
-# de BSDS se lleva a 3D por ese cociente (`cota_absoluta`). Derivado, no calibrado.
-VALORES_BSDS = PATCH_SIZE_BSDS ** 2 * CHANNELS_BSDS   # 93^2 x 3 = 25 947 valores por parche
+# El de train.py con la razón, la cota y el respaldo medidos en 3D (docs/porque-del-codigo.md,
+# DISYUNTOR EN 3D): razón 10, sin cota absoluta (en 3D sólo decidía en el arranque, y lo trababa),
+# y el respaldo cada 50 iteraciones sanas, sólo con el relativo armado.
+GUARD_3D = 10.0
+GUARD_RESPALDO_3D = 50
+# La alerta de W&B por la validación: el PSNR que elige `best.pth` al menos esto bajo el mejor
+# visto. Supuesto: con la semilla fija de la validación, una corrida sana no cae tanto.
+CAIDA_PSNR = 3.0
 
 # --- DATOS -----------------------------------------------------------------------------------
 DATA_ROOT = "datasets/ldm100k3d"
@@ -131,6 +136,11 @@ QSM_SUBIDAS = 2
 QSM_DATOS = "datasets/qsm_cosmos"
 QSM_ARCHIVOS = ("params.mat", "chi_cosmos.mat")   # los que lee `carga_cosmos`
 QSM_ORIGEN = "../tdv/data_mat"                    # de dónde se copian: el repo del pipeline QSM
+# Sim2, el segundo sujeto de la evaluación QSM (`--qsm-sim2`): lo arma `datasets/prepara_sim2.py`.
+QSM_SIM2 = "datasets/qsm_sim2"
+# --val-snr: SNR = pico/σ, con el pico = DATA_RANGE = 1, el percentil 99.5 al que se normaliza
+# cada T1: σ = 1/SNR. Es la convención del PSNR (PSNR de entrada = 20·log10 SNR), y σ = 25/255, la
+# de la validación, es SNR 10.2 (AGENTS.md, «Entrenamiento 3D»).
 # Lo de `best_qsm.pth` que va a `estado.json`: la iteración, lo que lo eligió (el NRMSE mínimo del
 # ADMM) y lo que se registra de diagnóstico.
 RESUMEN_BEST_QSM = ("iteration", "nrmse_min_pct", "nrmse_final_pct", "iteraciones", "motivo",
@@ -153,12 +163,14 @@ MESETA_MITADES = 5
 # seguimiento, la evaluación QSM y la estabilidad, con test), salvo `micro_lote` y `vram_gb`, que
 # lo elige con `auto`: cambian el orden de suma del gradiente y, a veces, el ruido o la
 # amplificación (el AVISO de `lee_estado`), no la receta. Se permiten para seguir en otra tarjeta,
-# y desde ahí la corrida no es bit a bit. CALENDARIO: lo que una rama (otro `--out`) puede cambiar
-# además.
+# y desde ahí la corrida no es bit a bit. `guard`, `guard_abs` y `guard_respaldo` tampoco la tocan
+# mientras el disyuntor no rechaza, y se permiten para reanudar protegida una corrida lanzada sin
+# él. CALENDARIO: lo que una rama (otro `--out`) puede cambiar además.
 LIBRES = frozenset({"out", "reanudar", "iterations", "log_every", "eval_every", "guardar_cada",
                     "workers", "micro_lote", "vram_gb", "sonda_vram", "seguimiento",
                     "wandb_proyecto", "qsm_datos", "eval_qsm_cada", "qsm_max_iter",
-                    "estabilidad_lado"})
+                    "qsm_target_std", "estabilidad_lado", "qsm_sim2", "val_snr",
+                    "guard", "guard_abs", "guard_respaldo"})
 CALENDARIO = frozenset({"hitos", "meseta", "meseta_mitades", "meseta_desde", "meseta_psnr"})
 
 # --- TRAZA -----------------------------------------------------------------------------------
@@ -180,11 +192,6 @@ def vnet_config3d(t_init: float, features: int = FEATURES) -> dict:
     config["R"]["type"] = "tdv3d"
     config["R"]["config"]["num_features"] = features
     return config
-
-
-def cota_absoluta(patch: int) -> float:
-    """`GUARD_ABS` de BSDS escalada por los valores sumados por parche: 4.26e4 a 48^3."""
-    return GUARD_ABS * patch ** 3 / VALORES_BSDS
 
 
 # --- MEMORIA Y MICRO-LOTES -------------------------------------------------------------------
@@ -396,8 +403,49 @@ def carga_qsm(carpeta: str) -> dict | None:
         return None
 
 
-def evalua_qsm(model, cosmos: dict, device, amp, max_iter: int) -> dict:
-    """El ADMM de `ddr/qsm3d.py` con el modelo como denoiser sobre el volumen entero: hasta
+def carga_sim2_o_aviso(carpeta: str) -> dict | None:
+    """Sim2 en numpy y en CPU; None, con un AVISO, si no se puede leer (la evaluación en Sim2
+    queda apagada y el entrenamiento sigue). Con `carpeta` vacía, None sin aviso."""
+    if not carpeta:
+        return None
+    try:
+        return carga_sim2(carpeta)
+    except Exception as e:
+        print(f"AVISO: evaluación en Sim2 apagada: {Path(carpeta) / SIM2_ARCHIVO} no se pudo leer "
+              f"({type(e).__name__}: {e}); se arma con datasets/prepara_sim2.py", flush=True)
+        return None
+
+
+def metricas_qsm(r: dict, datos: dict) -> dict:
+    """Las métricas del panel (`metricas_chi`) de la reconstrucción y de χ₀, la primera, sin la
+    red (`chi0_*`), y la consistencia de χ_GT con el dato, la referencia de la del mapa. Sin el
+    NRMSE de la reconstrucción, que ya es `nrmse_final_pct`. {} con un aviso si fallan: como la
+    evaluación, no pueden matar el entrenamiento."""
+    try:
+        m = {k: v for k, v in metricas_chi(r["chi"], datos).items() if k != "nrmse_pct"}
+        if r.get("chi0") is not None:
+            m |= {f"chi0_{k}": v for k, v in metricas_chi(r["chi0"], datos).items()
+                  if k != "factor_cono"}
+        m["gt_residuo_dato_pct"] = residuo_dato_pct(datos["chi"], datos)
+        return m
+    except Exception as e:
+        print(f"    métricas QSM FALLARON ({type(e).__name__}: {e}); el entrenamiento sigue",
+              flush=True)
+        return {}
+
+
+def linea_metricas(m: dict) -> str:
+    if not m:
+        return ""
+    return (f" | HFEN {m['hfen_pct']:.2f} %, XSIM {m['xsim']:.4f}, residuo {m['residuo_dato_pct']:.2f}"
+            f" % (GT {m['gt_residuo_dato_pct']:.2f}), cono ×{m['factor_cono']:.2f} | χ₀ sin red: "
+            f"NRMSE {m['chi0_nrmse_pct']:.2f} %, XSIM {m['chi0_xsim']:.4f}")
+
+
+def evalua_qsm(model, cosmos: dict, device, amp, max_iter: int,
+               target_std: float = TARGET_STD) -> dict:
+    """El ADMM de `ddr/qsm3d.py` con el modelo como denoiser sobre el volumen entero, con α tal
+    que α·χ₀ tenga desviación `target_std` en la máscara: hasta
     `max_iter` iteraciones, sin el corte por umbral (`tol` = -inf), y para cuando el NRMSE
     contra COSMOS sube QSM_SUBIDAS iteraciones seguidas (o si el update no es finito), con la
     mejor reconstrucción que vio. Devuelve las claves de `qsm/*`, el NRMSE y el update de cada
@@ -409,12 +457,13 @@ def evalua_qsm(model, cosmos: dict, device, amp, max_iter: int) -> dict:
     try:
         with torch.no_grad():
             r = admm_wtdv([denoiser_3d(model, autocast_dtype=amp)], cosmos, device=device,
-                          max_iter=max_iter, tol=-math.inf, subidas_para_cortar=QSM_SUBIDAS)
+                          target_std=target_std, max_iter=max_iter, tol=-math.inf,
+                          subidas_para_cortar=QSM_SUBIDAS)
         return {"nrmse_final_pct": r["nrmse_final"], "nrmse_min_pct": r["nrmse_min"],
                 "iter_min": r["it_min"], "iteraciones": r["iteraciones"], "alpha": r["alpha"],
                 "segundos": r["segundos"], "motivo": r["motivo"],
                 "nrmse_trayectoria_pct": r["nrmse"], "update_trayectoria": r["x_update"],
-                "chi": r["chi"]}
+                "chi": r["chi"], "chi0": r.get("chi0")}
     except Exception as e:
         fallo = f"{type(e).__name__}: {e}"
     finally:
@@ -602,6 +651,11 @@ def opciones() -> argparse.ArgumentParser:
     p.add_argument("--eval-list", default=EVAL_LIST)
     p.add_argument("--patch", type=int, default=PATCH_SIZE)
     p.add_argument("--lote", type=int, default=LOTE, help="parches por iteración: es receta")
+    p.add_argument("--epocas", action="store_true",
+                   help="épocas: cada una es una pasada por los volúmenes de entrenamiento, un "
+                        "parche de cada uno en orden al azar (sin reemplazo), con un DataLoader "
+                        "que se agota al terminarla; iteraciones por época = volúmenes // lote. "
+                        "Sin ella, cada parche sale de un volumen al azar, con reemplazo")
     p.add_argument("--micro-lote", type=entero_o_auto, default=MICRO_LOTE,
                    help="máximo de parches por backward: el lote se parte en ceil(lote/m) trozos "
                         "casi iguales (32 con 12: 11 + 11 + 10). `auto`: el que deja menos "
@@ -640,6 +694,11 @@ def opciones() -> argparse.ArgumentParser:
     p.add_argument("--sigma-max", type=float, default=0.0,
                    help="> 0 sortea sigma ~ U(--sigma-min, --sigma-max) por parche (ruido ciego)")
     p.add_argument("--sigma-min", type=float, default=SIGMA_MIN)
+    p.add_argument("--sigma-log", action="store_true",
+                   help="con --sigma-max y --sigma-min > 0: sigma log-uniforme en [--sigma-min, "
+                        "--sigma-max] en vez de uniforme")
+    p.add_argument("--fraccion-limpias", type=float, default=0.0,
+                   help="p en [0, 1): cada parche va sin ruido (sigma = 0) con probabilidad p")
     p.add_argument("--aug-signo", action="store_true",
                    help="multiplica el parche por -1 con probabilidad 1/2")
     p.add_argument("--aug-ganancia", type=float, default=1.0,
@@ -648,15 +707,17 @@ def opciones() -> argparse.ArgumentParser:
                    help="cada parche es un cubo entero dentro del cerebro, según "
                         "<data-root>/mascaras/train/ (datasets/mascaras_ldm100k3d.py)")
     p.add_argument("--clip", type=float, default=float("inf"), help="norma máxima del gradiente")
-    p.add_argument("--guard", type=float, default=GUARD_RATIO,
-                   help="rechaza el lote si |g| supera esta razón sobre su mediana móvil")
-    p.add_argument("--guard-abs", type=float, default=None,
-                   help="cota absoluta de |g|; sin la bandera, GUARD_ABS escalada al parche")
+    p.add_argument("--guard", type=float, default=GUARD_3D,
+                   help="rechaza el lote si |g| supera esta razón sobre su mediana móvil. `inf` "
+                        "lo apaga, y entonces el respaldo no se refresca")
+    p.add_argument("--guard-abs", type=float, default=math.inf,
+                   help="cota absoluta de |g|; sin la bandera, ninguna (en 3D traba el arranque)")
     p.add_argument("--guard-ventana", type=int, default=GUARD_VENTANA)
     p.add_argument("--guard-seguidos", type=int, default=GUARD_SEGUIDOS,
                    help="rechazos seguidos que disparan el rebobinado al respaldo. 0 lo apaga")
-    p.add_argument("--guard-respaldo", type=int, default=GUARD_RESPALDO,
-                   help="cada cuántas iteraciones sanas se refresca el respaldo")
+    p.add_argument("--guard-respaldo", type=int, default=GUARD_RESPALDO_3D,
+                   help="cada cuántas iteraciones sanas se refresca el respaldo, con el relativo "
+                        "armado")
     p.add_argument("--guard-limpias", type=int, default=GUARD_LIMPIAS,
                    help="iteraciones sanas seguidas que exige el respaldo antes de refrescarse")
     p.add_argument("--guard-amp", type=float, default=float("inf"),
@@ -680,6 +741,13 @@ def opciones() -> argparse.ArgumentParser:
                    help="carpeta con params.mat y chi_cosmos.mat (los de ../tdv/data_mat). Si "
                         "falta alguno, la evaluación QSM queda apagada con un aviso; '' la apaga "
                         "sin aviso")
+    p.add_argument("--qsm-sim2", default="",
+                   help=f"carpeta con {SIM2_ARCHIVO} (`datasets/prepara_sim2.py`, por defecto en "
+                        f"{QSM_SIM2}): la evaluación QSM corre también en Sim2, a W&B como "
+                        "qsm_sim2/*, sin elegir checkpoints. '' la apaga")
+    p.add_argument("--val-snr", type=float, nargs="*", default=[],
+                   help="SNR (pico/σ = 1/σ) donde se valida el denoising además de σ = --sigma, "
+                        "a W&B como val_snr<SNR>/*, sin elegir checkpoints; p. ej. 25 50 100")
     p.add_argument("--eval-qsm-cada", type=int, default=0,
                    help="0: la evaluación QSM va en cada validación; N > 0: en las validaciones "
                         "de iteración múltiplo de N y en la última")
@@ -687,6 +755,10 @@ def opciones() -> argparse.ArgumentParser:
                    help="techo de iteraciones del ADMM, que para antes si el NRMSE sube dos "
                         "iteraciones seguidas; sin el corte por umbral del autor (su script llega "
                         "hasta 100 con TOL/CORTE)")
+    p.add_argument("--qsm-target-std", type=float, default=TARGET_STD,
+                   help="desviación de α·χ₀ en la máscara con que la evaluación QSM escala la "
+                        "entrada de la red (y el punto de la estabilidad en QSM); 0.06 por "
+                        "defecto, el del oficial 2D")
     p.add_argument("--estabilidad-lado", type=int, default=LADO_ESTABILIDAD,
                    help="lado del cubo donde se mide (T/S)·λ_max(∇²R), con la cadencia de la "
                         "evaluación QSM: en la validación y, con COSMOS, en la entrada del primer "
@@ -762,16 +834,25 @@ def revisa_banderas(parser: argparse.ArgumentParser, args: argparse.Namespace) -
     # Siguen el rechazo de un gradiente no finito y el rebobinado.
     if args.sobreajuste:
         args.guard = args.guard_abs = math.inf
-    if args.guard_abs is None:
-        args.guard_abs = cota_absoluta(args.patch)
     if args.lote < 1:
         parser.error(f"--lote {args.lote}: tiene que ser al menos 1")
+    if args.epocas and args.sobreajuste:
+        parser.error("--epocas no va con --sobreajuste: el lote fijo no recorre los volúmenes")
+    if args.sigma_log and not (args.sigma_max > 0 and 0 < args.sigma_min <= args.sigma_max):
+        parser.error(f"--sigma-log pide --sigma-max > 0 y --sigma-min en (0, --sigma-max]: hay "
+                     f"{args.sigma_min:g} y {args.sigma_max:g}")
+    if not 0 <= args.fraccion_limpias < 1:
+        parser.error(f"--fraccion-limpias {args.fraccion_limpias:g}: tiene que estar en [0, 1)")
     if args.meseta < 0 or args.meseta_mitades < 0 or args.meseta_desde < 0:
         parser.error("--meseta, --meseta-mitades y --meseta-desde no pueden ser negativos")
     if (args.meseta_desde or args.meseta_psnr) and not args.meseta:
         parser.error("--meseta-desde y --meseta-psnr ajustan la meseta: necesitan --meseta N")
     if args.qsm_max_iter < 1:
         parser.error(f"--qsm-max-iter {args.qsm_max_iter}: tiene que ser al menos 1")
+    if any(not (math.isfinite(s) and s > 0) for s in args.val_snr):
+        parser.error(f"--val-snr {args.val_snr}: cada SNR tiene que ser positivo y finito")
+    if not (math.isfinite(args.qsm_target_std) and args.qsm_target_std > 0):
+        parser.error(f"--qsm-target-std {args.qsm_target_std}: tiene que ser positivo y finito")
     if args.meseta and not (args.qsm_datos and all((Path(args.qsm_datos) / a).is_file()
                                                    for a in QSM_ARCHIVOS)):
         parser.error(f"--meseta {args.meseta} decide con el NRMSE QSM, y la evaluación QSM no "
@@ -848,7 +929,7 @@ def lee_estado(parser: argparse.ArgumentParser, args: argparse.Namespace,
     if estado["args"]["micro_lote"] != args.micro_lote:
         # Qué más cambia, y por qué, en docs/porque-del-codigo.md, REANUDACIÓN.
         cambia = ["el orden de suma del gradiente"]
-        if args.sigma_max > 0 or args.patch ** 3 % 16:
+        if args.sigma_max > 0 or args.fraccion_limpias > 0 or args.patch ** 3 % 16:
             cambia.append("el ruido de cada parche")
         if math.isfinite(args.guard_amp):
             cambia.append("la amplificación adjunta que mira --guard-amp")
@@ -893,6 +974,25 @@ def arma_modelo(parser: argparse.ArgumentParser, args: argparse.Namespace, confi
     return model
 
 
+def lotes_por_epoca(train_set: PatchDataset3D, lote: int, workers: int, device):
+    """--epocas: un DataLoader por época, que se agota al terminarla (cada volumen de
+    entrenamiento dio un parche) y se rehace para la siguiente. Rinde lotes, como `iter(loader)`,
+    y se acaba con la corrida. Una reanudación a mitad de época empieza por lo que le falta. El
+    generador propio de cada DataLoader no toca el global, que restaura la reanudación."""
+    P = train_set.parches_por_epoca
+    epoca = train_set.offset // P
+    while True:
+        desde = max(epoca * P - train_set.offset, 0)
+        hasta = min((epoca + 1) * P - train_set.offset, len(train_set))
+        if desde >= hasta:
+            return
+        yield from DataLoader(Subset(train_set, range(desde, hasta)), batch_size=lote,
+                              shuffle=False, drop_last=True, num_workers=workers,
+                              pin_memory=(device.type == "cuda"),
+                              generator=torch.Generator().manual_seed(epoca))
+        epoca += 1
+
+
 def arma_entrenamiento(parser: argparse.ArgumentParser, args: argparse.Namespace, it0: int,
                        device: torch.device):
     """El dataset de parches y cómo se piden: un DataLoader de lotes enteros o, con --sobreajuste,
@@ -929,6 +1029,7 @@ def arma_entrenamiento(parser: argparse.ArgumentParser, args: argparse.Namespace
         length=args.lote if args.sobreajuste else (args.iterations - it0) * args.lote,
         seed=args.seed * 100, offset=0 if args.sobreajuste else it0 * args.lote,
         signo=args.aug_signo, ganancia=args.aug_ganancia, mascaras=mascaras,
+        lote_epoca=args.lote if args.epocas else None,
     )
     if mascaras is not None:
         esquinas = [e.size for e in train_set.esquinas]
@@ -938,6 +1039,12 @@ def arma_entrenamiento(parser: argparse.ArgumentParser, args: argparse.Namespace
     # El sobreajuste no tiene loader: su único lote se arma una vez.
     if args.sobreajuste:
         return train_set, None, torch.stack([train_set[i] for i in range(args.lote)])
+    if args.epocas:
+        por_epoca = train_set.parches_por_epoca // args.lote
+        print(f"épocas: {por_epoca} iteraciones por época ({train_set.parches_por_epoca} "
+              f"volúmenes, un parche de cada uno); {args.iterations / por_epoca:.2f} épocas en "
+              f"{args.iterations} iteraciones", flush=True)
+        return train_set, lotes_por_epoca(train_set, args.lote, args.workers, device), None
     # Un lote entero por pedido; los micro-lotes se cortan en el bucle. Con prefetch 2 y los dos
     # workers quedan en vuelo 2 x 2 x 32 parches, los mismos que con el loader de antes, que daba
     # micro-lotes de 16 con prefetch 4 (4 x 2 x 16).
@@ -981,7 +1088,8 @@ def arma_puntos_de_estabilidad(args: argparse.Namespace, eval_set, cosmos: dict 
         if cosmos is not None:
             try:
                 punto_qsm = torch.from_numpy(punto_qsm3d(
-                    cosmos, min(args.estabilidad_lado, *cosmos["mascara"].shape), device=device))
+                    cosmos, min(args.estabilidad_lado, *cosmos["mascara"].shape), device=device,
+                    target_std=args.qsm_target_std))
             except Exception as e:
                 print(f"AVISO: estabilidad en QSM apagada: el punto no se pudo armar "
                       f"({type(e).__name__}: {e}); el entrenamiento sigue", flush=True)
@@ -1015,8 +1123,11 @@ def prepara_salida(piezas, corrida) -> str | None:
 def imprime_arranque(piezas, corrida) -> None:
     """Las líneas del log que dicen qué va a correr: la receta, la validación, QSM y la meseta."""
     args = piezas.args
-    ruido = (f"sigma~U({args.sigma_min:g}, {args.sigma_max:g})" if args.sigma_max > 0
+    ruido = ((f"sigma~logU({args.sigma_min:g}, {args.sigma_max:g})" if args.sigma_log
+              else f"sigma~U({args.sigma_min:g}, {args.sigma_max:g})") if args.sigma_max > 0
              else f"sigma={args.sigma:g}")
+    if args.fraccion_limpias > 0:
+        ruido += f", {100 * args.fraccion_limpias:g} % de parches limpios"
     trozos = (f"{len(piezas.tamanos)}x{args.micro_lote}" if len(set(piezas.tamanos)) == 1
               else "+".join(map(str, piezas.tamanos)))
     print(f"parámetros: {sum(q.numel() for q in piezas.model.parameters()):,} | "
@@ -1029,7 +1140,8 @@ def imprime_arranque(piezas, corrida) -> None:
           f"mascara_cerebro={args.mascara_cerebro} | clip={args.clip:g} | "
           f"guard={args.guard:g}x mediana({args.guard_ventana}) | abs={args.guard_abs:g} | "
           f"rebobina a los {args.guard_seguidos} seguidos | respaldo tras "
-          f"{args.guard_limpias} limpias | guard_amp={args.guard_amp:g}"
+          f"{args.guard_limpias} limpias, cada {args.guard_respaldo} con el relativo armado | "
+          f"guard_amp={args.guard_amp:g}"
           + ("  [checkpointing]" if args.checkpointing else "")
           + (f"  [reanuda {args.reanudar}]" if args.reanudar else ""), flush=True)
     qsm_cuando = ("en cada validación" if args.eval_qsm_cada <= 0 else
@@ -1038,7 +1150,8 @@ def imprime_arranque(piezas, corrida) -> None:
           + ("sí" if piezas.con_cerebro else f"no (faltan máscaras en {piezas.mascaras_eval})")
           + " | QSM " + (f"{qsm_cuando}, COSMOS "
                          f"{'x'.join(map(str, piezas.cosmos['chi'].shape))} de "
-                         f"{args.qsm_datos}, hasta {args.qsm_max_iter} iteraciones de ADMM"
+                         f"{args.qsm_datos}, hasta {args.qsm_max_iter} iteraciones de ADMM "
+                         f"con target_std {args.qsm_target_std:g}"
                          if piezas.cosmos is not None else "apagada")
           + " | estabilidad " + ("apagada (--estabilidad-lado 0)" if piezas.punto_val is None else
                                  f"con la cadencia de QSM, en {piezas.punto_val.shape[-1]}^3 de "
@@ -1109,9 +1222,13 @@ def gradiente_del_lote(piezas, mide_corr: bool) -> tuple:
         # Cuántas veces cabe el trozo en el lote: su peso en la media. Con trozos iguales es la
         # cantidad de trozos, entera y exacta, y la aritmética es la de siempre.
         veces = args.lote / len(trozo)
-        if args.sigma_max > 0:
-            noisy, sigmas = add_noise_ciego(trozo, args.sigma_min, args.sigma_max,
-                                            piezas.noise_gen, NOISE_SCALE)
+        if args.sigma_max > 0 or args.fraccion_limpias > 0:
+            # Con σ fijo y una fracción de limpias, el σ fijo es el rango entero.
+            bajo, alto = ((args.sigma_min, args.sigma_max) if args.sigma_max > 0
+                          else (args.sigma, args.sigma))
+            noisy, sigmas = add_noise_ciego(trozo, bajo, alto, piezas.noise_gen, NOISE_SCALE,
+                                            log=args.sigma_log,
+                                            fraccion_limpias=args.fraccion_limpias)
             suma_sigma += float(sigmas.sum())
         else:
             noisy = add_noise(trozo, args.sigma, piezas.noise_gen, NOISE_SCALE)
@@ -1147,18 +1264,29 @@ def gradiente_del_lote(piezas, mide_corr: bool) -> tuple:
     return perdida, g_micro, suma_sigma, p0, pS, corr
 
 
+def alerta(piezas, titulo: str, texto: str) -> None:
+    """Lo que el autor tiene que saber sin mirar la corrida: al log y, si hay seguimiento, como
+    alerta de W&B (AGENTS.md, «Entrenamiento 3D»)."""
+    print(f"    ALERTA: {titulo}: {texto}", flush=True)
+    seguimiento.alerta(piezas.run, titulo, texto)
+
+
 def aplica_disyuntor(piezas, corrida, it: int, rechazado: bool, gnorm: float, centro: float,
                      amp: float, perdida: torch.Tensor) -> bool:
     """Lo que hace el disyuntor después del paso de Adam: cuenta el rechazo y, tras
     --guard-seguidos seguidos, rebobina pesos, Adam y ventana al respaldo. Tras --guard-limpias
-    aceptadas seguidas, refresca el respaldo si no hay o si pasaron --guard-respaldo iteraciones.
-    Devuelve si rebobinó."""
+    aceptadas seguidas, toma el primer respaldo y, con el relativo armado, lo refresca cada
+    --guard-respaldo iteraciones: sin él, una aceptada es sólo una finita, y el respaldo podría ser
+    una red ya rota. Dos rebobinados seguidos al mismo respaldo son una corrida TRABADA, que se
+    avisa y no se corta. Devuelve si rebobinó."""
     args = piezas.args
     if not rechazado:
         corrida.seguidos = 0
         corrida.limpias += 1
+        armado = math.isfinite(args.guard) and len(corrida.escala) >= args.guard_ventana
         if corrida.limpias >= args.guard_limpias and (
-                corrida.respaldo is None or it - corrida.it_respaldo >= args.guard_respaldo):
+                corrida.respaldo is None
+                or (armado and it - corrida.it_respaldo >= args.guard_respaldo)):
             corrida.respaldo = respalda(piezas.model, piezas.opt, corrida.escala)
             corrida.it_respaldo = it
         return False
@@ -1167,6 +1295,9 @@ def aplica_disyuntor(piezas, corrida, it: int, rechazado: bool, gnorm: float, ce
     corrida.max_seguidos = max(corrida.max_seguidos, corrida.seguidos)
     if corrida.respaldo is not None and 0 < args.guard_seguidos <= corrida.seguidos:
         rebobina(piezas.model, piezas.opt, corrida.respaldo, corrida.escala)
+        # El rebobinado anterior fue después de este respaldo: se vuelve por segunda vez seguida
+        # al mismo estado, y la red volvió a entrar en el estallido desde ahí.
+        trabada = corrida.it_rebobinado > corrida.it_respaldo
         # Se pierde lo hecho desde el respaldo, salvo lo que un rebobinado anterior al mismo
         # respaldo ya había descartado.
         corrida.descartadas += min(it - corrida.it_respaldo, it - corrida.it_rebobinado)
@@ -1174,6 +1305,11 @@ def aplica_disyuntor(piezas, corrida, it: int, rechazado: bool, gnorm: float, ce
         corrida.rebobinados, corrida.seguidos = corrida.rebobinados + 1, 0
         print(f"[{it:6d}] REBOBINADO a la it {corrida.it_respaldo} "
               f"({corrida.rebobinados} en lo que va) |g|={gnorm:.3g}", flush=True)
+        alerta(piezas, "rebobinado", f"{args.guard_seguidos} rechazos seguidos en la it {it}; "
+               f"vuelve a la it {corrida.it_respaldo}")
+        if trabada:
+            alerta(piezas, "TRABADA", f"dos rebobinados seguidos al respaldo de la it "
+                   f"{corrida.it_respaldo} (en la {it}). Si sigue, se relanza con otra semilla")
         return True
     if corrida.seguidos <= 3 or corrida.seguidos % 1000 == 0:
         print(f"[{it:6d}] LOTE RECHAZADO |g|={gnorm:.1f} mediana={centro:.1f} "
@@ -1196,6 +1332,8 @@ def registra_progreso(piezas, corrida, it: int, perdida: torch.Tensor, corr: flo
              "train/s_por_it": (time.time() - reloj[0]) / (it - reloj[1])}
     if piezas.device.type == "cuda":
         extra["train/vram_pico_gib"] = torch.cuda.max_memory_allocated(piezas.device) / 2 ** 30
+    if args.epocas:   # épocas completadas, con fracción: el eje x alternativo de W&B
+        extra["train/epoca"] = it * args.lote / piezas.train_set.parches_por_epoca
     seguimiento.registra(piezas.run, seguimiento.metricas_traza(corrida.traza, it) | extra, it)
 
 
@@ -1217,6 +1355,9 @@ def valida_denoising(piezas, corrida, it: int, perdida: torch.Tensor):
                "T": model.T.item(), "lambda": model.lmbda.item()}
     if piezas.con_cerebro:
         entrada["psnr_cerebro"] = report["psnr_denoised_cerebro"]
+        entrada["nrmse_pct_cerebro"] = report["nrmse_denoised_cerebro"]
+    if args.epocas:
+        entrada["epoca"] = it * args.lote / piezas.train_set.parches_por_epoca
     if args.sobreajuste:
         # La pérdida suma C·P^3 valores por parche: dividida, es el MSE del lote fijo.
         mse = perdida.item() / (CHANNELS * args.patch ** 3)
@@ -1230,6 +1371,8 @@ def valida_denoising(piezas, corrida, it: int, perdida: torch.Tensor):
     guarda_pth(payload, out / "last.pth")
     # Con --mascara-cerebro la red no ve fondo ni cráneo: elige el PSNR en el cerebro.
     psnr_criterio = entrada["psnr_cerebro"] if args.mascara_cerebro else psnr
+    psnr_ruidosa = report["psnr_noisy_cerebro" if args.mascara_cerebro else "psnr_noisy"]
+    caida = corrida.best_psnr - psnr_criterio if corrida.best_psnr else 0.0
     if psnr_criterio > corrida.best_psnr:
         corrida.best_psnr = psnr_criterio
         guarda_pth(payload, out / "best.pth")
@@ -1242,12 +1385,78 @@ def valida_denoising(piezas, corrida, it: int, perdida: torch.Tensor):
           f"{entrada['nrmse_pct_tejido']:.2f} % ({report['num_volumenes']} vols)"
           + (f" | lote fijo {entrada['psnr_lote']:.3f} dB" if args.sobreajuste else "")
           + ("  *mejor*" if psnr_criterio == corrida.best_psnr else ""), flush=True)
+    # Un estallido hunde el PSNR decenas de dB (`ciego-epocas-l32`: −32 dB en su primera
+    # validación). Peor que la entrada ruidosa lo avisa aunque sea la primera.
+    if psnr_criterio < psnr_ruidosa:
+        alerta(piezas, "la red empeora la entrada", f"PSNR {psnr_criterio:.2f} dB en la it {it}, "
+               f"contra {psnr_ruidosa:.2f} dB de la ruidosa")
+    elif caida >= CAIDA_PSNR:
+        alerta(piezas, "PSNR de validación", f"{psnr_criterio:.2f} dB en la it {it}, "
+               f"{caida:.1f} dB bajo el mejor")
     seguimiento.registra(piezas.run, {f"val/{k}": v for k, v in entrada.items()
                                       if k not in ("iteration", "efectiva", "T", "lambda")}, it)
     registra_lamina(piezas.run, "val/denoising", lambda: lamina_denoising(*report["primero"]),
                     it, f"{piezas.eval_set.files[0].stem}: limpia | ruidosa | salida | "
                         "5·|salida − limpia|, en [0, 1]")
     return entrada, psnr, psnr_criterio
+
+
+def valida_niveles(piezas, corrida, it: int, entrada: dict) -> None:
+    """--val-snr: el denoising de validación a otros SNR, con las mismas semillas; a su entrada de
+    `history.json`, al log y a W&B (val_snr<SNR>/*, con su lámina). No elige checkpoints."""
+    args, model = piezas.args, piezas.model
+    for snr in args.val_snr:
+        model.eval()
+        rep = evaluate_denoising3d(model, piezas.eval_set, DATA_RANGE / snr * NOISE_SCALE,
+                                   piezas.device, seed=SEMILLA_VAL, data_range=DATA_RANGE,
+                                   noise_scale=NOISE_SCALE, amp=piezas.mode["amp"],
+                                   devuelve_primero=piezas.run is not None)
+        model.train()
+        sufijo = "_cerebro" if piezas.con_cerebro else ""
+        m = {"psnr": rep[f"psnr_denoised{sufijo}"], "psnr_entrada": rep[f"psnr_noisy{sufijo}"]}
+        if piezas.con_cerebro:
+            m |= {"nrmse_pct": rep["nrmse_denoised_cerebro"],
+                  "nrmse_entrada_pct": rep["nrmse_noisy_cerebro"]}
+        clave = f"val_snr{snr:g}"
+        entrada |= {f"{clave}_{k}": v for k, v in m.items()}
+        print(f"    eval SNR {snr:g}{' en cerebro' if sufijo else ''}: PSNR "
+              f"{m['psnr_entrada']:.3f} → {m['psnr']:.3f} dB"
+              + (f" | NRMSE {m['nrmse_entrada_pct']:.2f} → {m['nrmse_pct']:.2f} %"
+                 if "nrmse_pct" in m else ""), flush=True)
+        seguimiento.registra(piezas.run, {f"{clave}/{k}": v for k, v in m.items()}, it)
+        registra_lamina(piezas.run, f"{clave}/denoising",
+                        lambda: lamina_denoising(*rep["primero"]), it,
+                        f"{piezas.eval_set.files[0].stem}, SNR {snr:g}: limpia | ruidosa | "
+                        "salida | 5·|salida − limpia|, en [0, 1]")
+    (piezas.out / "history.json").write_text(json.dumps(corrida.history, indent=2))
+
+
+def valida_sim2(piezas, corrida, it: int) -> None:
+    """La evaluación QSM en Sim2: el mismo ADMM que en COSMOS, a `qsm_sim2.jsonl` y a W&B
+    (qsm_sim2/*, con su lámina). No elige checkpoints ni toca la meseta."""
+    args = piezas.args
+    r = evalua_qsm(piezas.model, piezas.sim2, piezas.device, piezas.mode["amp"],
+                   args.qsm_max_iter, args.qsm_target_std)
+    met = metricas_qsm(r, piezas.sim2) if "fallo" not in r else {}
+    fila = {"iteration": it, "efectiva": it - corrida.descartadas,
+            "target_std": args.qsm_target_std,
+            **{k: v for k, v in r.items() if k not in ("chi", "chi0")}, **met}
+    anota_jsonl(piezas.out / "qsm_sim2.jsonl", fila)
+    if "fallo" in r:
+        print(f"    qsm Sim2 FALLÓ ({r['fallo']}); el entrenamiento sigue", flush=True)
+        seguimiento.registra(piezas.run, {"qsm_sim2/fallo": 1}, it)
+        return
+    print(f"    qsm Sim2 NRMSE={r['nrmse_final_pct']:.2f} % (mínimo {r['nrmse_min_pct']:.2f} % en "
+          f"la iteración {r['iter_min']}) | alpha={r['alpha']:.4f} | {r['segundos']:.1f} s"
+          + linea_metricas(met), flush=True)
+    seguimiento.registra(piezas.run, {"qsm_sim2/fallo": 0, **{
+        f"qsm_sim2/{k}": r[k] for k in ("nrmse_final_pct", "nrmse_min_pct", "iter_min",
+                                        "iteraciones", "alpha", "segundos")},
+        **{f"qsm_sim2/{k}": v for k, v in met.items()}}, it)
+    registra_lamina(piezas.run, "qsm_sim2/reconstruccion",
+                    lambda: lamina_qsm(r["chi"], piezas.sim2["chi"], piezas.sim2["mascara_eval"],
+                                       orientacion=ORIENTACION_T1, chi0=r["chi0"]),
+                    it, "Sim2: GT | χ₀ sin red | reconstrucción | error, en la máscara, ±0.1 ppm")
 
 
 def valida_estabilidad(piezas, corrida, it: int, entrada: dict) -> None:
@@ -1300,9 +1509,11 @@ def valida_qsm(piezas, corrida, it: int, psnr: float,
     est = (mide_estabilidad(piezas.model, piezas.punto_qsm, piezas.device)
            if piezas.punto_qsm is not None else None)
     r = evalua_qsm(piezas.model, piezas.cosmos, piezas.device, piezas.mode["amp"],
-                   args.qsm_max_iter)
+                   args.qsm_max_iter, args.qsm_target_std)
+    met = metricas_qsm(r, piezas.cosmos) if "fallo" not in r else {}
     fila = {"iteration": it, "efectiva": it - corrida.descartadas,
-            **{k: v for k, v in r.items() if k != "chi"},
+            "target_std": args.qsm_target_std,
+            **{k: v for k, v in r.items() if k not in ("chi", "chi0")}, **met,
             **(claves_estabilidad(est) if est is not None else {})}
     corrida.qsm_hist.append(fila)
     anota_jsonl(piezas.out / "qsm.jsonl", fila)
@@ -1318,7 +1529,11 @@ def valida_qsm(piezas, corrida, it: int, psnr: float,
     print(f"    qsm NRMSE={r['nrmse_final_pct']:.2f} % (mínimo "
           f"{r['nrmse_min_pct']:.2f} % en la iteración {r['iter_min']} del ADMM)"
           f" | {r['iteraciones']} iteraciones, motivo {r['motivo']} | "
-          f"alpha={r['alpha']:.4f} | {r['segundos']:.1f} s", flush=True)
+          f"alpha={r['alpha']:.4f} | {r['segundos']:.1f} s" + linea_metricas(met), flush=True)
+    if r["iter_min"] == 0:
+        alerta(piezas, "el ADMM devuelve χ0", f"en la it {it}, el mínimo del ADMM en COSMOS "
+               f"({r['nrmse_min_pct']:.2f} %) es su iteración 0: la red no mejora la "
+               "reconstrucción sin red")
     # `best_qsm.pth`: la evaluación de menor NRMSE mínimo del ADMM, lo mismo que mira la meseta.
     # El final, el motivo y la estabilidad viajan con él, pero no eligen.
     if r["nrmse_min_pct"] < (corrida.mejor_qsm["nrmse_min_pct"] if corrida.mejor_qsm
@@ -1335,11 +1550,13 @@ def valida_qsm(piezas, corrida, it: int, psnr: float,
               "menor hasta ahora", flush=True)
     seguimiento.registra(piezas.run, {"qsm/fallo": 0, **{
         f"qsm/{k}": r[k] for k in ("nrmse_final_pct", "nrmse_min_pct", "iter_min",
-                                   "iteraciones", "alpha", "segundos")}}, it)
+                                   "iteraciones", "alpha", "segundos")},
+        **{f"qsm/{k}": v for k, v in met.items()}}, it)
     registra_lamina(piezas.run, "qsm/reconstruccion",
                     lambda: lamina_qsm(r["chi"], piezas.cosmos["chi"],
-                                       piezas.cosmos["mascara_eval"]),
-                    it, "COSMOS: GT | reconstrucción | error, en la máscara, ±0.1 ppm")
+                                       piezas.cosmos["mascara_eval"], chi0=r["chi0"]),
+                    it, "COSMOS: GT | χ₀ sin red | reconstrucción | error, en la máscara, "
+                        "±0.1 ppm")
     # La meseta mira las evaluaciones sin fallo desde --meseta-desde, y nunca la última: con la
     # corrida terminando, ya no hay lr que partir.
     if args.meseta and args.meseta_desde <= it < args.iterations:
@@ -1350,6 +1567,8 @@ def valida(piezas, corrida, it: int, perdida: torch.Tensor) -> None:
     """Una validación: denoising siempre; estabilidad y QSM, con la cadencia de --eval-qsm-cada."""
     args = piezas.args
     entrada, psnr, psnr_criterio = valida_denoising(piezas, corrida, it, perdida)
+    if args.val_snr:
+        valida_niveles(piezas, corrida, it, entrada)
     # Después de `valida_denoising`, que ya escribió `history.json` y los `.pth`: un corte duro a
     # mitad de la estabilidad o del ADMM no los pierde.
     toca_qsm = args.eval_qsm_cada <= 0 or it % args.eval_qsm_cada == 0 or it == args.iterations
@@ -1357,6 +1576,8 @@ def valida(piezas, corrida, it: int, perdida: torch.Tensor) -> None:
         valida_estabilidad(piezas, corrida, it, entrada)
     if piezas.cosmos is not None and toca_qsm:
         valida_qsm(piezas, corrida, it, psnr, psnr_criterio)
+    if piezas.sim2 is not None and toca_qsm:
+        valida_sim2(piezas, corrida, it)
 
 
 def guarda_estado(piezas, corrida, it: int, t0: float) -> None:
@@ -1516,6 +1737,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.meseta and cosmos is None:
         parser.error(f"--meseta {args.meseta}: COSMOS no se pudo cargar de {args.qsm_datos} "
                      "(el AVISO de arriba), y sin evaluación QSM no hay NRMSE con qué decidir")
+    sim2 = carga_sim2_o_aviso(args.qsm_sim2)
     punto_val, punto_qsm = arma_puntos_de_estabilidad(args, eval_set, cosmos, device)
 
     # Sin scheduler: el lr lo fija `lr_en` al principio de cada iteración.
@@ -1534,7 +1756,7 @@ def main(argv: list[str] | None = None) -> None:
         args=args, device=device, mode=mode, out=out, it0=it0, hitos=hitos, tamanos=tamanos,
         predicha=predicha, mide_amp=mide_amp, config=config, model=model, opt=opt,
         noise_gen=noise_gen, train_set=train_set, lote_fijo=lote_fijo, eval_set=eval_set,
-        con_cerebro=con_cerebro, mascaras_eval=mascaras_eval, cosmos=cosmos,
+        con_cerebro=con_cerebro, mascaras_eval=mascaras_eval, cosmos=cosmos, sim2=sim2,
         punto_val=punto_val, punto_qsm=punto_qsm, lotes=None, run=None)
     commit = prepara_salida(piezas, corrida)
     imprime_arranque(piezas, corrida)

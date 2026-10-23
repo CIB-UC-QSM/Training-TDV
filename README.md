@@ -128,7 +128,7 @@ uv run python train3d.py --out runs/sonda --sonda-vram   # opcional: memoria y c
 uv run python train3d.py --out runs/humo --iterations 40 --eval-every 20 --seguimiento no   # ¿corre todo?
 uv run python train3d.py --out runs/prueba3d --iterations 400 --eval-every 200   # ¿aprende?
 uv run python train3d.py --out runs/sobreajuste --sobreajuste --lote 4 --hitos --iterations 1500 \
-    --eval-every 250 --mascara-cerebro --qsm-datos '' --estabilidad-lado 0   # ¿memoriza un lote?
+    --eval-every 250 --mascara-cerebro --qsm-datos '' --estabilidad-lado 0   # ¿aprende un lote fijo?
 uv run python train3d.py --out runs/t1-3d
 ```
 
@@ -316,17 +316,18 @@ log lo avisa).
    uv run python -c "import torch; print(torch.cuda.get_device_name())"
    ```
 
-3. **Datos.** Son 4 026 archivos y 31.7 GB: los volúmenes cacheados (21 GB), las máscaras (10.5 GB;
-   `--mascara-cerebro` y el PSNR en cerebro) y COSMOS (48 MB). Se copian desde la raíz del
+3. **Datos.** Son 4 028 archivos y 31.8 GB: los volúmenes cacheados (21 GB), las máscaras (10.5 GB;
+   `--mascara-cerebro` y el PSNR en cerebro), COSMOS (48 MB) y Sim2 (34 MB, `--qsm-sim2`). Se copian desde la raíz del
    repositorio de origen, con el clon ya hecho en el destino (paso 2). `-L` copia archivos, no
    enlaces. Fuera de una LAN gigabit conviene `-z`: las máscaras comprimen ~90–100× y los
    volúmenes ~2× (zlib, medido en tres de cada uno, 2026-10-19).
 
    ```bash
    rsync -aRL --info=progress2 datasets/ldm100k3d/images datasets/ldm100k3d/mascaras \
-       datasets/qsm_cosmos usuario@destino:Training-TDV/      # -azRL fuera de una LAN gigabit
-   # en el destino, desde Training-TDV/: tiene que dar 4026
-   find -L datasets/ldm100k3d/images datasets/ldm100k3d/mascaras datasets/qsm_cosmos -type f | wc -l
+       datasets/qsm_cosmos datasets/qsm_sim2 usuario@destino:Training-TDV/   # -azRL fuera de LAN
+   # en el destino, desde Training-TDV/: tiene que dar 4028
+   find -L datasets/ldm100k3d/images datasets/ldm100k3d/mascaras datasets/qsm_cosmos \
+       datasets/qsm_sim2 -type f | wc -l
    ```
 
 4. **Seguimiento.** Sin credencial, `--seguimiento auto` (el default) registra en `<out>/wandb/`, y
@@ -404,22 +405,22 @@ log lo avisa).
    - **Para evaluar el QSM cada 100** igual: `--eval-every 100 --meseta 50` (la misma paciencia,
      más caro), sin `--eval-qsm-cada`.
 
-   **`--guard 10`** (recomendación del 2026-10-19 de la sesión coordinadora y la sesión 3D, que el
-   autor mantiene). Con la razón 5, los escalones de ‖g‖ (5–12× la mediana, con la pérdida normal)
-   se volvían rebobinados, una vez cada ~93 iteraciones con el relativo armado, y las corridas de
-   1 000 conservaron el 32 y el 22 % de sus iteraciones. Con 10 hubo un solo rebobinado fuera del
-   arranque en 3 103 iteraciones con el relativo armado, y se conservó el 69–97 %. De 20 lotes
-   aceptados a 5–10×, uno solo precedió algo que rebobinó. Es de la bitácora, «El disyuntor en 3D»
-   (sondas `prep3d-mil`, `prep3d-g10` y `prep3d-g10-s2-2500`). `--guard` no se cambia al reanudar: una
-   corrida lanzada con la razón 5 se empieza de cero.
-
-   **La cota absoluta queda en 42 622** (`--guard-abs` sin pasar). Es GUARD_ABS = 10⁴ del 2D, que en
-   BSDS cae en el hueco medido entre excursiones que se resuelven solas (≤ 6 113) y las que no (≥
-   1.97·10⁵), llevada al cubo de 48³ por el cociente de valores sumados por parche (×4.26). Sólo
-   actúa antes de que la mediana tenga 100 normas aceptadas: después, con `--guard 10`, la razón
-   rechaza todo lo que pase de ~3·10³. Y en las trazas 3D queda por encima de todos los lotes con
-   los que el arranque salió adelante (1.4–4.0·10⁴): con 2·10⁴ se habrían rechazado 4 de esas 6
-   salidas y con 10⁴ las 6.
+   **El disyuntor 3D, por defecto:** razón 10, sin cota absoluta y respaldo cada 50 iteraciones
+   sanas con el relativo armado. Detalle en `docs/porque-del-codigo.md`, DISYUNTOR EN 3D, y en la
+   bitácora, «El disyuntor en 3D» y «Qué pasó con los estallidos».
+   - **Razón 10:** con 5, los escalones de ‖g‖ (5–12× la mediana, con la pérdida normal) se
+     volvían rebobinados cada ~93 iteraciones. Con 10 hubo un rebobinado fuera del arranque en
+     3 103 iteraciones. Con ruido ciego, la razón sana no pasó de 16.9 en 6 514 iteraciones, y el
+     estallido de `ciego-epocas-l32` fue de 1 389×.
+   - **Sin cota absoluta:** sólo decidía antes de que se armara el relativo, y en 3D ahí traba la
+     corrida. Los picos del arranque (10⁴–5·10⁷) se resuelven solos; rechazados, la red no se
+     mueve y la racha rebobina a la iteración 3.
+   - **El respaldo:** se refresca sólo con el relativo armado. Sin él, «sana» quiere decir
+     «finita», y se respalda una red rota.
+   - **`TRABADA`:** dos rebobinados seguidos al mismo respaldo escriben esa marca en el log y
+     mandan una alerta de W&B.
+   - **Al reanudar:** `--guard`, `--guard-abs` y `--guard-respaldo` se pueden cambiar, porque el
+     disyuntor no toca la aritmética mientras no rechaza.
 
    Si nada mejorara nunca desde la 10 000 (ni el NRMSE ni el PSNR):
 
@@ -441,6 +442,23 @@ log lo avisa).
    systemctl --user stop tdv-3d-largo     # la para: se pierde lo posterior al último estado-<it>.pth
    ```
 
+   **Propuesta, pendiente de aprobación del autor (2026-10-21): `--qsm-target-std 0.25
+   --guardar-cada 500`.** En la etapa 2, con la red control y con `prep3d-g10-s2-2500`, en COSMOS
+   y en Sim2, 0.06 fue el peor de {0.02, 0.06, 0.25, 0.35}, 2.6–7.7 pp de NRMSE sobre 0.25, con
+   HFEN también peor; la regla pre-registrada (estable en los dos sujetos y menor distancia en el
+   peor caso al mejor α de cada uno) dio 0.25 en las dos redes (bitácora, «Etapa 2»). Los estados
+   cada 500 (200 en 100 000 iteraciones, ~9.4 GB) dejan reevaluar después cada checkpoint a 0.02,
+   0.06 y 0.25, porque entre 0.02 y 0.25 decide la métrica. Sin aprobar, el comando de arriba sigue
+   siendo el vigente.
+
+   ```bash
+   systemd-run --user --collect --unit tdv-3d-largo -p WorkingDirectory=$PWD bash -c \
+       ".venv/bin/python -u train3d.py --out runs/3d-largo --iterations 100000 --hitos \
+        --meseta 10 --meseta-desde 10000 --meseta-psnr --guard 10 --mascara-cerebro \
+        --seguimiento online --eval-every 100 --eval-qsm-cada 500 --guardar-cada 500 \
+        --qsm-target-std 0.25 > runs/3d-largo.log 2>&1"
+   ```
+
    `--collect` va siempre. Sin él, una unidad que falla queda «failed»: por ejemplo, con un corte
    por memoria o con el error de `--seguimiento online`. Relanzar con el mismo `--unit` falla
    hasta `systemctl --user reset-failed tdv-3d-largo`, justo al reanudar.
@@ -449,7 +467,8 @@ log lo avisa).
    `--guardar-cada` no toca la aritmética. Tras un corte se lanza el mismo comando con `--reanudar`
    y `>>`, para no pisar el log, con TODAS las banderas: las de la receta (`--guard`) y las del
    calendario (`--meseta*`) se exigen iguales, y las libres (`--eval-every`, `--eval-qsm-cada`,
-   `--qsm-max-iter`) vuelven a su default si faltan. La meseta sigue con su cuenta y sus mitades,
+   `--qsm-max-iter`, `--qsm-target-std`) vuelven a su default si faltan: cambiarlas a mitad de
+   corrida mezcla criterios en la meseta y en `best_qsm.pth`. La meseta sigue con su cuenta y sus mitades,
    que viajan en el estado. Si una mitad llegara antes de tiempo, se rehace con una rama (otro
    `--out`) desde el estado anterior a ella, con otra `--meseta`:
 
@@ -485,7 +504,9 @@ justificadas en sus notas finales. `--sigma` (25, en 0–255) fija también la �
 `--sigma-max` > 0 sortea σ ~ U(`--sigma-min`, `--sigma-max`) por parche (ruido ciego), y
 `--eval-qsm-cada N` limita QSM y estabilidad a las validaciones múltiplo de N (y la última).
 `--qsm-max-iter` (25) es el techo de iteraciones del ADMM, que para antes si el NRMSE sube dos
-iteraciones seguidas. `--meseta`,
+iteraciones seguidas. `--qsm-target-std` (0.06, el del oficial 2D) fija α: la desviación de α·χ₀
+en la máscara, la escala con que la red ve χ en la evaluación QSM y en su punto de estabilidad;
+queda en `config.json` y en cada fila de `qsm.jsonl`. `--meseta`,
 `--meseta-mitades`, `--meseta-desde`, `--meseta-psnr` y `--sobreajuste` vienen apagadas (arriba,
 «Entrenar en 3D»), y
 `train.py` tiene también `--sigma-min/--sigma-max`. El resto, con sus valores por defecto, está en

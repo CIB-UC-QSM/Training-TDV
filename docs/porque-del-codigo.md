@@ -33,7 +33,8 @@ Al final, `cierra` escribe `estado.json`. Respecto de `train.py`, cuatro diferen
    micro-lote lo elige la memoria (MEMORIA y MICRO-LOTES).
 2. El lr no lo lleva un scheduler: `lr_en(it, hitos)` lo fija al principio de cada iteración, con
    los hitos de `--meseta` sumados (MESETA).
-3. La cota absoluta del disyuntor escala con el parche (`cota_absoluta`).
+3. El disyuntor va con razón 10, sin cota absoluta y con el respaldo refrescado cada 50 sólo con
+   el relativo armado (DISYUNTOR EN 3D).
 4. `--guardar-cada` escribe el estado completo, y `--reanudar` sigue desde ahí bit a bit con el
    mismo micro-lote (REANUDACIÓN).
 
@@ -214,7 +215,7 @@ default es 8), para que ninguna forma de la validación o del ADMM caiga en eage
 los parches 0 a `--lote` − 1 sorteados de los primeros `--lote` volúmenes de la lista (los únicos
 que carga), armado una vez en `arma_entrenamiento`, con el mismo ruido, porque `entrena` vuelve el
 generador del ruido a su semilla en cada iteración. Si la tubería aprende, la pérdida de ese lote
-baja mucho más que la de validación: la red lo memoriza. La validación agrega `psnr_lote`, el PSNR
+baja mucho más que la de validación: la red se ajusta a ese lote con su ruido. La validación agrega `psnr_lote`, el PSNR
 de ese lote leído de la pérdida de la iteración (antes de su paso, dividida por C·P³), al lado del
 PSNR de validación.
 
@@ -402,17 +403,30 @@ pérdida.
 
 ### DISYUNTOR EN 3D
 
-`GUARD_RATIO`, `GUARD_VENTANA`, `GUARD_SEGUIDOS`, `GUARD_RESPALDO` y `GUARD_LIMPIAS` se importan de
-`train.py`, los de BSDS: el relativo es invariante de escala. La cota absoluta no: la pérdida es
-una suma por parche, y en 3D el arranque sano la cruza (medido con una semilla en 80 iteraciones:
-máximo 8 367 a 48³ y 15 985 a 64³). `cota_absoluta(P)` la lleva por el cociente de valores
-sumados, `GUARD_ABS · P³ / VALORES_BSDS` con `VALORES_BSDS` = 93² · 3 = 25 947: 4.26e4 a 48³
-(42 622) y 1.01e5 a 64³, 5.1× y 6.3× sobre esos máximos. Se aplica cuando `--guard-abs` no se pasa.
-Es derivada, no calibrada: los máximos son de una semilla y 80 iteraciones, y que el hueco
-[6 113, 1.97e5] de BSDS escale igual es un supuesto. `GUARD_SEGUIDOS = 25` viene de la racha sana
-más larga en BSDS (18); en 3D la tiene que medir la corrida larga. Lo observado en las sondas 3D
-(razón 5 contra 10, el arranque, la cota) y el `--guard 10` de la corrida larga: bitácora, «El
-disyuntor en 3D».
+`GUARD_VENTANA`, `GUARD_SEGUIDOS` y `GUARD_LIMPIAS` se importan de `train.py`, los de BSDS, porque
+el relativo es invariante de escala. En 3D cambian tres cosas, medidas (bitácora, «El disyuntor
+en 3D» y «Qué pasó con los estallidos»):
+- **`GUARD_3D = 10`, no 5.** Con 5, los escalones de ‖g‖ (5–12× la mediana, con la pérdida
+  normal) se volvían rebobinados cada ~93 iteraciones. Con ruido ciego, la razón sana no pasó de
+  16.9 en 6 514 iteraciones, siempre en lotes sueltos, y el estallido de `ciego-epocas-l32` fue de
+  1 389×.
+- **Sin cota absoluta:** si `--guard-abs` no se pasa, vale `inf`. La cota sólo decide antes de
+  que la ventana se llene, y en 3D el arranque sano la cruza: en las cuatro corridas ciegas hubo
+  picos de 1.06e4 a 4.8e7, que se resolvieron solos.
+  - Si se los rechaza, la red no se mueve, los lotes siguientes vuelven a dar ‖g‖ alto con los
+    mismos pesos, y la racha rebobina al respaldo de la iteración 3.
+  - En el arranque sólo se rechaza lo no finito.
+- **`GUARD_RESPALDO_3D = 50`, y sólo con el relativo armado** (`aplica_disyuntor`).
+  - Sin el relativo, una iteración aceptada es sólo una iteración finita, y el respaldo puede ser
+    una red ya rota: `ciego-epocas-l32` respaldó en la 253 un estado de después del estallido.
+  - Con 250, un estallido en la 179 rebobinaba a la 3.
+  - El primer respaldo se sigue tomando a las `GUARD_LIMPIAS` aceptadas, para que el rebobinado
+    por un gradiente no finito tenga adónde volver.
+
+**La corrida trabada:** dos rebobinados seguidos al mismo respaldo, sin un refresco entre medio.
+El log dice `TRABADA` y W&B manda una alerta; el bucle no se corta (AGENTS.md).
+
+`GUARD_SEGUIDOS = 25` viene de la racha sana más larga en BSDS, que fue de 18.
 
 ### RUIDO CIEGO Y AUMENTOS
 
@@ -555,8 +569,8 @@ ninguna de las dos (`test_seguimiento_offline_de_una_corrida`, con wandb instala
 Lo que el autor pidió: medir el modelo como denoiser dentro de la reconstrucción QSM, que es su
 destino. Es el ADMM plug-and-play de `../tdv/wTDV_QSM_torch_3d.py` en `ddr/qsm3d.admm_wtdv`, con
 k = 1 (la red 3D sobre los 160³ de COSMOS de una vez) y su protocolo: μ = 0.008, μ₂ = 1.0 y
-`target_std` = 0.06; la parada no (abajo). No viene de `../QSM-TDV`, que no tiene ADMM:
-reconstruye con pasos de gradiente explícitos. Las máscaras, los umbrales de parada del autor y el
+`target_std` = 0.06 (por defecto: `--qsm-target-std`); la parada no (abajo). No viene de
+`../QSM-TDV`, que no tiene ADMM: reconstruye con pasos de gradiente explícitos. Las máscaras, los umbrales de parada del autor y el
 número que reproduce con su red 2D, en `ddr/qsm3d.py` (PROTOCOLO DEL AUTOR). La métrica es la
 suya, el NRMSE contra `chi_cosmos` en su máscara, medido sobre M·χ.
 
@@ -647,9 +661,13 @@ suya, el NRMSE contra `chi_cosmos` en su máscara, medido sobre M·χ.
   sí en una que no cortó, con el final en 90 % y estabilidad 7); sin ningún mínimo finito no hay
   archivo; reanudar repone el del estado y aparta uno ajeno; y la traza es la de la corrida sin
   QSM.
-- **Abierto:** `TARGET_STD` = 0.06 se calibró para la red 2D color del autor, no para una 3D
-  entrenada en T1, y una parada sin referencia para la red 3D está sin calibrar. Las dos se
-  calibran con un grid después del entrenamiento (bitácora, «Abierto»).
+- **`--qsm-target-std`, 0.06 por defecto:** es el `TARGET_STD` que el autor calibró para su red 2D
+  color; queda como default para no mover las corridas anteriores. En la etapa 2, con dos redes 3D
+  y dos sujetos, 0.06 fue el peor de {0.02, 0.06, 0.25, 0.35}, y la propuesta es 0.25 (bitácora,
+  «Etapa 2» y «Abierto»). Va también al punto de la estabilidad en QSM, que es la entrada del
+  primer denoiser del ADMM y depende de α.
+- **Abierto:** una parada sin referencia para la red 3D está sin calibrar; se calibra con un grid
+  después del entrenamiento (bitácora, «Abierto»).
 
 ### ESTABILIDAD
 
@@ -835,8 +853,8 @@ relativo, y `rayleigh` su signo, con un dominante negativo (semilla 0) y con uno
 
 **El punto QSM.** `punto_qsm3d` es la entrada del primer denoiser del ADMM 3D (k = 1): α·M·χ₀, con
 χ₀ la primera actualización de χ (z = s = 0, así que sólo el término de datos), α =
-`TARGET_STD`/std(χ₀ en M) con la std de `torch.std` (n − 1), y cero fuera de M, como la ve el
-denoiser. No se recalcula: corre `admm_wtdv` una iteración con un denoiser que guarda su entrada,
+`--qsm-target-std`/std(χ₀ en M) (0.06 por defecto, `TARGET_STD`) con la std de `torch.std`
+(n − 1), y cero fuera de M, como la ve el denoiser. No se recalcula: corre `admm_wtdv` una iteración con un denoiser que guarda su entrada,
 así que no puede divergir del ADMM (`test_punto_qsm3d_es_la_entrada_del_primer_denoiser`: bit a bit
 la primera entrada de un ADMM de cuatro iteraciones, y a 1e-5 de la fórmula cerrada en float64).
 El script 2D armaba otra cosa: tres cortes axiales adyacentes como RGB de 96², con la misma fórmula
@@ -922,8 +940,8 @@ Cada número, medido en BSDS:
   múltiplos de `it`: con múltiplos, una corrida que se daña antes del primero se queda sin respaldo.
 - **`GUARD_SEGUIDOS = 25`:** rechazos seguidos que rebobinan; un tramo sano llega a 18.
 
-En 3D la cota absoluta es `GUARD_ABS` escalada por los valores sumados por parche (`cota_absoluta`:
-42 622 a 48³), y la corrida larga usa `--guard 10` (bitácora, «El disyuntor en 3D»).
+En 3D no hay cota absoluta, la razón es 10 y el respaldo se refresca cada 50 iteraciones, sólo
+con el relativo armado (DISYUNTOR EN 3D).
 
 - **El rebobinado.** Rechazar llega un paso tarde: ‖g‖ se mide en los pesos de ahora. Por eso
   `respalda` copia en RAM pesos, `m`, `v` y ventana (~4.5 MB en el 2D; derivado, ~14 MB con los

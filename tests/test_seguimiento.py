@@ -145,6 +145,7 @@ def test_offline_escribe_la_corrida(entorno, capsys):
     seguimiento.registra(run, {"val/psnr": 30.5, "val/nrmse_pct": 7.5}, 2)   # misma fila
     seguimiento.registra_imagenes(run, {"val/denoising": np.zeros((8, 24), np.uint8)}, 2,
                                   leyendas={"val/denoising": "ruidoso | TDV | limpio"})
+    seguimiento.alerta(run, "prueba", "offline no la manda, y no apaga nada")
     seguimiento.resumen(run, {"mejor_psnr": 30.5})
     seguimiento.cierra(run)
 
@@ -181,6 +182,33 @@ def test_cada_iteracion_de_una_traza(entorno):
                for it in (1, 200, 400))
     assert Path(next(Path(segmentos(out, identidad(out)["id"])[0]).glob("*.wandb"))).stat(
         ).st_size > 32768
+
+
+def test_la_alerta_llega_y_si_falla_no_apaga_el_registro(capsys):
+    """`alerta` le pasa título y texto a `run.alert`. Si falla, lo dice en el log y las métricas
+    siguen: una alerta perdida no puede costar el registro del resto de la corrida."""
+    class Falsa:
+        def __init__(self):
+            self.alertas, self.filas = [], []
+
+        def alert(self, **campos):
+            self.alertas.append(campos)
+
+        def log(self, metricas, step):
+            self.filas.append((step, metricas))
+
+    run = Falsa()
+    seguimiento.alerta(run, "rebobinado", "it 180")
+    assert run.alertas == [{"title": "rebobinado", "text": "it 180", "level": "WARN"}]
+
+    def sin_red(**campos):
+        raise RuntimeError("sin red")
+    run.alert = sin_red
+    seguimiento.alerta(run, "TRABADA", "dos rebobinados al mismo respaldo")
+    assert "la alerta «TRABADA» no salió (RuntimeError: sin red)" in capsys.readouterr().out
+    seguimiento.registra(run, {"train/loss": 1.0}, 3)
+    assert run.filas == [(3, {"train/loss": 1.0})]
+    seguimiento.alerta(None, "sin seguimiento", "no hace nada")
 
 
 def test_reanudar_en_el_mismo_out_sigue_la_misma_corrida(entorno):

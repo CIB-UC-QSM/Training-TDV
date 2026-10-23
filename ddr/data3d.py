@@ -16,6 +16,7 @@ iteración k es construir el dataset con `offset = k * lote`, sin guardar estado
 from __future__ import annotations
 
 import itertools
+import math
 import warnings
 from collections.abc import Iterable, Sequence
 from pathlib import Path
@@ -151,18 +152,35 @@ def orienta(vol: np.ndarray, k: int) -> np.ndarray:
 # --- RUIDO CIEGO -----------------------------------------------------------------------------
 
 def add_noise_ciego(y: torch.Tensor, sigma_min: float, sigma_max: float, generator=None,
-                    noise_scale: float = 255.0) -> tuple[torch.Tensor, torch.Tensor]:
+                    noise_scale: float = 255.0, log: bool = False,
+                    fraccion_limpias: float = 0.0) -> tuple[torch.Tensor, torch.Tensor]:
     """Ruido gaussiano con sigma ~ U(sigma_min, sigma_max) por muestra (eje 0), en las unidades de
     `add_noise`. Devuelve `(ruidosa, sigmas)`.
 
-    Del mismo generador salen primero los sigmas y después el ruido: con `sigma_min == sigma_max`
-    el ruido NO es el de `add_noise` con ese sigma, porque el sorteo de los sigmas va antes.
+    Con `log`, sigma es log-uniforme en [sigma_min, sigma_max] (pide sigma_min > 0): cada octava de
+    σ recibe la misma cantidad de parches, en vez de que los σ chicos sean raros. Con
+    `fraccion_limpias` p > 0, cada muestra queda sin ruido (sigma = 0) con probabilidad p.
+
+    Del mismo generador salen primero los sigmas, después (con p > 0) el sorteo de las limpias y
+    al final el ruido: con `sigma_min == sigma_max` el ruido NO es el de `add_noise` con ese sigma,
+    porque el sorteo de los sigmas va antes. Con `log` y p apagados, el resultado es bit a bit el
+    de antes de que existieran.
     """
     if sigma_min > sigma_max:
         raise ValueError(f"sigma_min {sigma_min} > sigma_max {sigma_max}")
+    if log and not sigma_min > 0:
+        raise ValueError(f"log: sigma_min {sigma_min} tiene que ser > 0")
+    if not 0 <= fraccion_limpias < 1:
+        raise ValueError(f"fraccion_limpias {fraccion_limpias} tiene que estar en [0, 1)")
     n = y.shape[0]
     u = torch.rand(n, generator=generator, dtype=y.dtype, device=y.device)
-    sigmas = sigma_min + (sigma_max - sigma_min) * u
+    if log:
+        sigmas = torch.exp(math.log(sigma_min) + (math.log(sigma_max) - math.log(sigma_min)) * u)
+    else:
+        sigmas = sigma_min + (sigma_max - sigma_min) * u
+    if fraccion_limpias > 0:
+        limpias = torch.rand(n, generator=generator, dtype=y.dtype, device=y.device)
+        sigmas = torch.where(limpias < fraccion_limpias, torch.zeros_like(sigmas), sigmas)
     noise = torch.randn(y.shape, generator=generator, dtype=y.dtype, device=y.device)
     escala = (sigmas / noise_scale).view(n, *([1] * (y.ndim - 1)))
     return y + escala * noise, sigmas
@@ -185,7 +203,7 @@ class PatchDataset3D(Dataset):
     def __init__(self, files, patch_size=48, length=100_000, seed=0, offset=0, augment=True,
                  min_tejido=MIN_TEJIDO, umbral_tejido=UMBRAL_TEJIDO, intentos=INTENTOS,
                  signo=False, ganancia=1.0, mascaras: Iterable[np.ndarray] | None = None,
-                 margen_cerebro=MARGEN_CEREBRO):
+                 margen_cerebro=MARGEN_CEREBRO, lote_epoca: int | None = None):
         if intentos < 1:
             raise ValueError(f"intentos = {intentos}: hace falta al menos uno")
         if ganancia < 1.0:
@@ -205,6 +223,14 @@ class PatchDataset3D(Dataset):
         self.esquinas = self.grillas = self.con_esquinas = None
         if mascaras is not None:
             self._indexa(mascaras)
+        # Épocas (`lote_epoca`): una época es una pasada por los volúmenes que se sortean, cada
+        # uno un parche, en el orden de una permutación por época; se cortan los que no completan
+        # un lote. Sin `lote_epoca`, el volumen se sortea con reemplazo, como siempre.
+        candidatos = len(self.volumes) if self.con_esquinas is None else len(self.con_esquinas)
+        if lote_epoca is not None and not 1 <= lote_epoca <= candidatos:
+            raise ValueError(f"lote_epoca = {lote_epoca}: tiene que estar en [1, {candidatos}]")
+        self.parches_por_epoca = (None if lote_epoca is None
+                                  else candidatos // lote_epoca * lote_epoca)
 
     def _indexa(self, mascaras: Iterable[np.ndarray]) -> None:
         """Las esquinas válidas de cada volumen, y los volúmenes que tienen alguna."""
@@ -239,13 +265,21 @@ class PatchDataset3D(Dataset):
     def __len__(self) -> int:
         return self.length
 
+    def _volumen_de(self, muestra: int, rng: np.random.Generator, n: int) -> int:
+        """Cuál de los `n` candidatos da la muestra global `muestra`: al azar con reemplazo o, con
+        épocas, el lugar `muestra % P` de la permutación de su época (sin reemplazo)."""
+        if self.parches_por_epoca is None:
+            return int(rng.integers(n))
+        epoca, lugar = divmod(muestra, self.parches_por_epoca)
+        return int(np.random.default_rng((self.seed, epoca, 1)).permutation(n)[lugar])
+
     def __getitem__(self, index: int) -> torch.Tensor:
         # Semilla por índice GLOBAL: el parche `offset + index` es siempre el mismo, sin estado
         # compartido entre workers ni entre una corrida y su reanudación.
         rng = np.random.default_rng((self.seed, self.offset + index))
         size = self.patch_size
         if self.esquinas is None:
-            vol = self.volumes[rng.integers(len(self.volumes))]
+            vol = self.volumes[self._volumen_de(self.offset + index, rng, len(self.volumes))]
             # Tope de intentos: si ninguno pasa queda el último, así que nunca cuelga.
             for _ in range(self.intentos):
                 d, h, w = (int(rng.integers(n - size + 1)) for n in vol.shape)
@@ -254,7 +288,8 @@ class PatchDataset3D(Dataset):
                     break
         else:
             # Sin intentos ni filtro de tejido: toda esquina de la lista es un cubo de cerebro.
-            k = self.con_esquinas[rng.integers(len(self.con_esquinas))]
+            k = self.con_esquinas[self._volumen_de(self.offset + index, rng,
+                                                   len(self.con_esquinas))]
             esquinas = self.esquinas[k]
             plano = int(esquinas[rng.integers(len(esquinas))])
             d, h, w = (int(i) for i in np.unravel_index(plano, self.grillas[k]))

@@ -35,6 +35,7 @@ checkpoints/*
 datasets/*
 !datasets/cache_ldm100k3d.py
 !datasets/mascaras_ldm100k3d.py
+!datasets/prepara_sim2.py
 !datasets/bsds500/
 datasets/bsds500/*
 !datasets/bsds500/cbsd68.txt
@@ -49,6 +50,9 @@ scripts/
 
 # PDFs de papers: pesados (~67 MB). Se versionan solo las notas destiladas.
 docs/papers/*.pdf
+
+# Figuras de las etapas: pesan (~33 MB) y se rehacen con sus scripts. Quedan locales.
+docs/figuras/
 
 # Cachés
 .pytest_cache/

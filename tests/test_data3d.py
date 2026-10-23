@@ -13,6 +13,7 @@ a bit a los scripts que los midieron se verificó aparte, sobre LDM_100k (bloque
 import hashlib
 import importlib.util
 import itertools
+import math
 import os
 import subprocess
 import sys
@@ -92,6 +93,24 @@ def test_el_parche_depende_solo_del_indice_global(tmp_path):
     assert torch.equal(corrida[5], corrida[5])   # sin estado entre llamadas
     otra = PatchDataset3D(files, **{**kw, "seed": 8})
     assert not any(torch.equal(otra[i], corrida[i]) for i in range(10))
+
+
+def test_epocas_cada_volumen_una_vez_por_epoca(tmp_path):
+    """Con `lote_epoca`, cada P = (volúmenes // lote)·lote parches seguidos salen de P volúmenes
+    distintos, en otro orden en cada época, y el parche sigue dependiendo sólo del índice global.
+    Cada volumen es constante, así que la media del parche dice de cuál salió."""
+    files = [guarda(tmp_path, f"v{j}", np.full((14, 14, 14), (j + 1) / 8)) for j in range(5)]
+    kw = dict(patch_size=12, seed=3, lote_epoca=2, augment=False)
+    ds = PatchDataset3D(files, length=40, **kw)
+    assert ds.parches_por_epoca == 4
+    cual = [round(float(ds[i].mean()) * 8) - 1 for i in range(40)]
+    epocas = [cual[i:i + 4] for i in range(0, 40, 4)]
+    assert all(len(set(e)) == 4 for e in epocas)
+    assert len({tuple(e) for e in epocas}) > 1
+    reanudada = PatchDataset3D(files, length=10, offset=6, **kw)
+    assert all(torch.equal(reanudada[i], ds[6 + i]) for i in range(10))
+    with pytest.raises(ValueError, match="lote_epoca"):
+        PatchDataset3D(files, **{**kw, "lote_epoca": 6})
 
 
 def test_el_parche_cumple_min_tejido_cuando_hay_tejido(tmp_path):
@@ -370,6 +389,52 @@ def test_add_noise_ciego_respeta_el_rango_de_sigma():
     assert torch.allclose(ruidosa, (sigmas / 255.0).view(-1, 1, 1, 1, 1) * ruido)
     with pytest.raises(ValueError):
         add_noise_ciego(y, 10.0, 5.0)
+
+
+def test_add_noise_ciego_apagado_es_bit_a_bit_el_de_antes():
+    """Con `log` y `fraccion_limpias` en sus defaults, el mismo generador da lo mismo que pasarlos
+    explícitos: las banderas apagadas no tocan ni el sorteo ni el ruido."""
+    y = torch.rand(6, 1, 8, 8, 8, generator=torch.Generator().manual_seed(3))
+    a = add_noise_ciego(y, 0.0, 55.0, torch.Generator().manual_seed(7), 255.0)
+    b = add_noise_ciego(y, 0.0, 55.0, torch.Generator().manual_seed(7), 255.0, log=False,
+                        fraccion_limpias=0.0)
+    assert torch.equal(a[0], b[0]) and torch.equal(a[1], b[1])
+
+
+def test_add_noise_ciego_log_uniforme():
+    """Con `log`, log σ es uniforme en [log σ_min, log σ_max]: los cuantiles de log σ caen donde
+    los de una uniforme, y el sorteo es determinista con el generador."""
+    y = torch.zeros(20000, 1, 2, 2, 2)
+    _, sigmas = add_noise_ciego(y, 0.81, 55.0, torch.Generator().manual_seed(0), 255.0, log=True)
+    assert 0.81 <= float(sigmas.min()) and float(sigmas.max()) <= 55.0
+    t = (torch.log(sigmas.double()) - math.log(0.81)) / (math.log(55.0) - math.log(0.81))
+    q = torch.quantile(t, torch.tensor([0.1, 0.25, 0.5, 0.75, 0.9], dtype=torch.float64))
+    assert torch.allclose(q, torch.tensor([0.1, 0.25, 0.5, 0.75, 0.9], dtype=torch.float64),
+                          atol=0.015)
+    # La mitad de los parches bajo la media geométrica (6.67), contra ~11 % con la uniforme.
+    assert abs(float((sigmas < math.sqrt(0.81 * 55.0)).double().mean()) - 0.5) < 0.015
+    _, otra = add_noise_ciego(y, 0.81, 55.0, torch.Generator().manual_seed(0), 255.0, log=True)
+    assert torch.equal(sigmas, otra)
+    with pytest.raises(ValueError):
+        add_noise_ciego(y, 0.0, 55.0, log=True)
+
+
+def test_add_noise_ciego_fraccion_limpias():
+    """Con p > 0, una fracción ~p de las muestras sale con σ = 0 y exactamente igual a la
+    limpia; las demás llevan su σ del sorteo de siempre."""
+    y = torch.rand(4000, 1, 4, 4, 4, generator=torch.Generator().manual_seed(1))
+    ruidosa, sigmas = add_noise_ciego(y, 5.0, 55.0, torch.Generator().manual_seed(2), 255.0,
+                                      fraccion_limpias=0.25)
+    limpias = sigmas == 0
+    assert abs(float(limpias.double().mean()) - 0.25) < 0.025
+    assert torch.equal(ruidosa[limpias], y[limpias])
+    assert float(sigmas[~limpias].min()) >= 5.0 and not torch.equal(ruidosa[~limpias], y[~limpias])
+    # Las σ que no se anulan son las del sorteo sin limpias (sale antes, del mismo generador).
+    _, sin = add_noise_ciego(y, 5.0, 55.0, torch.Generator().manual_seed(2), 255.0)
+    assert torch.equal(sigmas[~limpias], sin[~limpias])
+    for p_mala in (-0.1, 1.0):
+        with pytest.raises(ValueError):
+            add_noise_ciego(y, 5.0, 55.0, fraccion_limpias=p_mala)
 
 
 # --- CACHE -----------------------------------------------------------------------------------

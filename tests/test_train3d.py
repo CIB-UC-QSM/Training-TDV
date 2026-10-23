@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -52,7 +53,8 @@ FORZADO = ["--guard", "1", "--guard-ventana", "1", "--guard-seguidos", "2", "--g
            "1", "--guard-respaldo", "1000"]
 VARIANTES = {
     # Respaldo cada 4 iteraciones: el de la 7 cuenta limpias de los dos lados del corte en la 6.
-    "receta": HITOS + ["--guard-respaldo", "4"],
+    # Con la ventana de 2 el relativo se arma en la 2, y el respaldo se refresca desde ahí.
+    "receta": HITOS + ["--guard-respaldo", "4", "--guard-ventana", "2"],
     "disyuntor": HITOS + FORZADO + ["--sigma-max", "55", "--aug-signo", "--aug-ganancia", "2"],
 }
 # (variante, corte). El disyuntor se corta en la 6 justo tras un rebobinado (con el `rebobina()` de
@@ -210,10 +212,12 @@ def corridas(tmp_path_factory):
 # --- RECETA ----------------------------------------------------------------------------------
 
 def test_la_receta_es_la_de_train():
-    """Lo que no cambia con la dimensión se importa, no se copia: tocar `train.py` mueve ambos."""
+    """Lo que no cambia con la dimensión se importa, no se copia: tocar `train.py` mueve ambos. La
+    razón, la cota y el respaldo del disyuntor sí cambian en 3D
+    (`test_los_defaults_son_la_receta`)."""
     for nombre in ("LR", "BETAS", "SIGMA", "STEPS", "FEATURES", "SCALES", "MACRO_BLOCKS",
-                   "DELTA_ADAM", "T_INIT", "LAMBDA_INIT", "GUARD_RATIO", "GUARD_ABS",
-                   "GUARD_VENTANA", "GUARD_SEGUIDOS", "GUARD_RESPALDO", "GUARD_LIMPIAS", "MODES",
+                   "DELTA_ADAM", "T_INIT", "LAMBDA_INIT",
+                   "GUARD_VENTANA", "GUARD_SEGUIDOS", "GUARD_LIMPIAS", "MODES",
                    "NOISE_SCALE", "DATA_RANGE", "rechaza_lote", "respalda", "rebobina"):
         assert getattr(train3d, nombre) is getattr(train, nombre), nombre
     assert (train3d.LR, train3d.BETAS, train3d.STEPS) == (4e-4, (0.9, 0.999), 10)
@@ -251,24 +255,62 @@ def test_los_defaults_son_la_receta():
     assert a.iterations == train3d.ITERACIONES_TANDA
     # En 3D `referencia` cuesta ~21x y a 48^3 x 4 no entra en 16 GB.
     assert a.mode == "rapido"
-    assert a.hitos is None and a.guard_abs is None and not a.sin_compilar
+    assert a.hitos is None and not a.sin_compilar
     assert a.sigma_max == 0.0 and not a.aug_signo and a.aug_ganancia == 1.0
     assert not a.mascara_cerebro
-    assert (a.guard, a.guard_ventana, a.guard_seguidos) == (
-        train.GUARD_RATIO, train.GUARD_VENTANA, train.GUARD_SEGUIDOS)
+    # El disyuntor 3D: razón 10, sin cota absoluta y respaldo cada 50 (bitácora, «Qué pasó con
+    # los estallidos»); la ventana, la racha y las limpias son las del 2D.
+    assert (a.guard, a.guard_abs, a.guard_respaldo) == (
+        train3d.GUARD_3D, math.inf, train3d.GUARD_RESPALDO_3D) == (10, math.inf, 50)
+    assert (a.guard_ventana, a.guard_seguidos, a.guard_limpias) == (
+        train.GUARD_VENTANA, train.GUARD_SEGUIDOS, train.GUARD_LIMPIAS)
     modelo = VNet3D(train3d.vnet_config3d(a.t_init, a.features))
     assert sum(p.numel() for p in modelo.R.parameters()) == 1_162_112
 
 
-def test_la_cota_absoluta_escala_con_los_valores_del_parche():
-    """`‖g‖` suma sobre los valores del parche. Llevada por ese cociente, la cota de BSDS queda
-    5.1x sobre el máximo del arranque sano a 48^3 y 6.3x a 64^3 (bitácora, «El disyuntor en 3D»);
-    sin escalar, 64^3 la cruzaba dos veces en 80 iteraciones."""
-    assert train3d.cota_absoluta(48) == pytest.approx(4.262e4, rel=1e-3)
-    assert train3d.cota_absoluta(48) > 5 * 8_367
-    assert train3d.cota_absoluta(64) > 6 * 15_985
-    # La referencia es el parche de la receta 2D: 93 x 93 en color.
-    assert train3d.VALORES_BSDS == train.PATCH_SIZE ** 2 * train.CHANNELS == 25_947
+def test_el_respaldo_se_certifica_con_el_relativo_y_la_racha_repetida_es_trabada(capsys):
+    """Sin el relativo armado, «aceptada» sólo quiere decir «finita»: el respaldo se queda en el del
+    arranque en vez de copiar una red que puede estar rota (`ciego-epocas-l32` respaldó en la 253
+    un estado de después del estallido). Armado, se refresca cada --guard-respaldo. Dos
+    rebobinados seguidos al mismo respaldo son una corrida trabada: lo dicen el log y W&B."""
+    modelo = torch.nn.Linear(2, 1)
+    opt = torch.optim.Adam(modelo.parameters())
+    perdida = torch.tensor(1.0)
+
+    def corrida_con(guard, ventana_llena, iteraciones=199):
+        args = train3d.opciones().parse_args(["--out", "x", "--guard", str(guard)])
+        piezas = SimpleNamespace(args=args, model=modelo, opt=opt, run=None)
+        corrida = train3d.corrida_nueva(1)
+        corrida.escala = [1.0] * (args.guard_ventana if ventana_llena else 1)
+        for it in range(1, iteraciones + 1):
+            train3d.aplica_disyuntor(piezas, corrida, it, False, 1.0, 1.0, 1.0, perdida)
+        return piezas, corrida
+
+    assert corrida_con(math.inf, True)[1].it_respaldo == 3      # sin relativo: el del arranque
+    assert corrida_con(10, False)[1].it_respaldo == 3           # relativo sin armar
+    piezas, corrida = corrida_con(10, True)
+    assert corrida.it_respaldo == 153                           # 3, 53, 103 y 153
+
+    def racha(desde):
+        for it in range(desde, desde + piezas.args.guard_seguidos):
+            train3d.aplica_disyuntor(piezas, corrida, it, True, 1e9, 1.0, 1.0, perdida)
+        return desde + piezas.args.guard_seguidos
+
+    it = racha(200)                      # primer rebobinado a la 153
+    it = racha(it)                       # segundo al mismo respaldo: trabada
+    for it in range(it, it + 60):        # aceptadas: refresca el respaldo
+        train3d.aplica_disyuntor(piezas, corrida, it, False, 1.0, 1.0, 1.0, perdida)
+    racha(it + 1)                        # rebobina al respaldo nuevo: no es trabada
+    log = capsys.readouterr().out
+    assert log.count("REBOBINADO") == 3 and log.count("TRABADA") == 1
+    assert "TRABADA: dos rebobinados seguidos al respaldo de la it 153" in log
+    assert log.count("ALERTA: rebobinado") == 3
+
+
+def test_el_disyuntor_se_puede_cambiar_al_reanudar():
+    """El disyuntor no toca la aritmética mientras no rechaza: una corrida lanzada sin él se puede
+    reanudar protegida."""
+    assert {"guard", "guard_abs", "guard_respaldo"} <= train3d.LIBRES
 
 
 # --- MEMORIA ---------------------------------------------------------------------------------
@@ -419,6 +461,12 @@ def test_micro_lote_auto_deja_la_menor_cantidad_de_trozos():
     (["--meseta-desde", "10000"], "necesitan --meseta N"),
     (["--meseta-psnr"], "necesitan --meseta N"),
     (["--qsm-max-iter", "0"], "--qsm-max-iter 0: tiene que ser al menos 1"),
+    (["--sigma-log"], "--sigma-log pide --sigma-max > 0"),
+    (["--sigma-log", "--sigma-max", "55"], "--sigma-log pide --sigma-max > 0"),
+    (["--fraccion-limpias", "1"], "--fraccion-limpias 1: tiene que estar en [0, 1)"),
+    (["--qsm-target-std", "0"], "--qsm-target-std 0.0: tiene que ser positivo y finito"),
+    (["--qsm-target-std", "nan"], "--qsm-target-std nan: tiene que ser positivo y finito"),
+    (["--val-snr", "25", "0"], "cada SNR tiene que ser positivo y finito"),
     (["--micro-lote", "ocho"], "un entero o `auto`"),
     (["--patch", "96", "--vram-gb", "2"], "ni un parche de 96^3 entra en 2.00 GiB"),
     # Con checkpointing, el paso 1 cuenta sin --guard-amp y no con: `main` le pasa la bandera.
@@ -1194,9 +1242,13 @@ def test_la_evaluacion_qsm_deja_sus_metricas(con_qsm):
     filas = qsm_jsonl(con)
     assert [f["iteration"] for f in filas] == [QSM_EVALUA, QSM_N]
     for f in filas:
-        assert set(f) == {"iteration", "efectiva", "nrmse_final_pct", "nrmse_min_pct",
-                          "iter_min", "iteraciones", "alpha", "segundos", "motivo",
-                          "nrmse_trayectoria_pct", "update_trayectoria"} | ESTABILIDAD
+        assert set(f) == {"iteration", "efectiva", "target_std", "nrmse_final_pct",
+                          "nrmse_min_pct", "iter_min", "iteraciones", "alpha", "segundos",
+                          "motivo", "nrmse_trayectoria_pct", "update_trayectoria"} | ESTABILIDAD \
+            | {"hfen_pct", "xsim", "residuo_dato_pct", "factor_cono", "chi0_nrmse_pct",
+               "chi0_hfen_pct", "chi0_xsim", "chi0_residuo_dato_pct", "gt_residuo_dato_pct"}
+        assert 0 < f["xsim"] <= 1 and f["hfen_pct"] > 0 and f["chi0_nrmse_pct"] > 0
+        assert f["target_std"] == qsm3d.TARGET_STD == 0.06
         assert f["iteraciones"] == 3 and f["motivo"] == "max_iter"
         assert 0 < f["nrmse_min_pct"] <= f["nrmse_final_pct"] and f["alpha"] > 0
         # Las trayectorias: una entrada por iteración, la última es el final y el menor, el mínimo.
@@ -1493,7 +1545,8 @@ def test_reanudar_un_estado_sin_banderas_nuevas(corridas, tmp_path):
     ruta = carpeta / f"estado-{K:06d}.pth"
     viejo = estado(carpeta, K)
     for clave in ("mascara_cerebro", "seguimiento", "wandb_proyecto", "qsm_datos",
-                  "eval_qsm_cada", "qsm_max_iter", "estabilidad_lado", "meseta_desde",
+                  "eval_qsm_cada", "qsm_max_iter", "qsm_target_std", "estabilidad_lado",
+                  "meseta_desde",
                   "meseta_psnr"):
         del viejo["args"][clave]
     del viejo["qsm"], viejo["mejor_qsm"]
@@ -1735,6 +1788,37 @@ def test_la_evaluacion_qsm_para_si_empeora_con_techo_de_25(monkeypatch):
     assert train3d.opciones().get_default("qsm_max_iter") == 25
 
 
+def test_qsm_target_std_llega_al_admm_y_al_punto_de_estabilidad(monkeypatch):
+    """--qsm-target-std (0.06 por defecto, el TARGET_STD del oficial) es el `target_std` del ADMM
+    de la evaluación y el del punto donde se mide la estabilidad en QSM."""
+    visto = []
+
+    def admm(denoisers, datos, **kw):
+        visto.append(kw["target_std"])
+        return {"chi": np.zeros(1), "nrmse": [30.0], "x_update": [1.0], "alpha": 2.0,
+                "iteraciones": 1, "motivo": "max_iter", "nrmse_final": 30.0, "nrmse_min": 30.0,
+                "it_min": 0, "k": 1, "segundos": 0.1}
+
+    monkeypatch.setattr(train3d, "admm_wtdv", admm)
+    train3d.evalua_qsm(torch.nn.Linear(1, 1), {}, "cpu", None, 25)
+    train3d.evalua_qsm(torch.nn.Linear(1, 1), {}, "cpu", None, 25, 0.25)
+    assert visto == [qsm3d.TARGET_STD, 0.25]
+
+    def punto(datos, lado, **kw):
+        visto.append(kw["target_std"])
+        return np.zeros((lado,) * 3, dtype=np.float32)
+
+    monkeypatch.setattr(train3d, "punto_qsm3d", punto)
+    args = train3d.opciones().parse_args(["--out", "x", "--qsm-target-std", "0.25",
+                                          "--estabilidad-lado", "4"])
+    eval_set = [(torch.zeros(1, 8, 8, 8), "v")]
+    train3d.arma_puntos_de_estabilidad(args, eval_set, {"mascara": np.ones((8, 8, 8), bool)},
+                                       torch.device("cpu"))
+    assert visto[-1] == args.qsm_target_std == 0.25
+    assert train3d.opciones().get_default("qsm_target_std") == qsm3d.TARGET_STD == 0.06
+    assert "qsm_target_std" in train3d.LIBRES
+
+
 def test_la_meseta_parte_el_lr_y_corta(nuevas):
     """Con el NRMSE mínimo forzado (y el final a contramano): lr/2 desde la 4 y desde la 5, y en la
     6, sin mitades, el corte. La traza tiene 6 filas, el estado de la 6 se guarda, y `estado.json`
@@ -1830,3 +1914,20 @@ def test_falta_para_online(monkeypatch):
         assert seguimiento.falta_para_online() is None
     monkeypatch.setattr(seguimiento.importlib.util, "find_spec", lambda nombre: None)
     assert "uv sync" in seguimiento.falta_para_online()
+
+
+def test_epocas_reanuda_bit_a_bit_y_cambia_el_sorteo(tmp_path):
+    """--epocas con lote 1 y 3 volúmenes: 3 iteraciones por época. Cortada en la 5, a mitad de la
+    segunda, y reanudada, repite bit a bit la seguida; y su traza no es la de sin épocas, porque
+    cambia de qué volumen sale cada parche."""
+    base = [*arma_datos(tmp_path / "datos"), "--lote", "1"]
+    seguida, sin, cortada = (tmp_path / n for n in ("seguida", "sin", "cortada"))
+    (out, _), *_ = espera(lanza(base, seguida, "--epocas", "--guardar-cada", str(N)),
+                          lanza(base, sin, "--guardar-cada", str(N)),
+                          lanza(base, cortada, "--epocas", "--iterations", "5",
+                                "--guardar-cada", "5"))
+    assert "épocas: 3 iteraciones por época" in out
+    espera(lanza(base, cortada, "--epocas", "--guardar-cada", str(N),
+                 "--reanudar", str(cortada / "estado-000005.pth")))
+    assert bit_a_bit(traza(seguida), traza(cortada))
+    assert not bit_a_bit(traza(seguida), traza(sin))

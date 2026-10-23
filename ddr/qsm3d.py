@@ -34,7 +34,7 @@ from typing import Any
 import numpy as np
 import scipy.io
 import torch
-from scipy import ndimage
+from scipy import ndimage, signal
 
 from .data3d import _recorte_centrado
 
@@ -62,6 +62,9 @@ Denoiser = Callable[[torch.Tensor], torch.Tensor]
 # referencia.
 MU = 0.008                   # :25, el `mu` del oficial en PARAMS, "del grid search del 2D"
 MU2 = 1.0                    # :52, peso del split del término de datos
+# El cono del dipolo: donde μ₂·D² < μ, el x-update pesa más el prior que el dato (0.0894).
+UMBRAL_CONO = math.sqrt(MU / MU2)
+SIM2_ARCHIVO = "sim2.npz"     # lo que deja `datasets/prepara_sim2.py`
 TARGET_STD = 0.06            # :25, desviación de alpha·chi_0 en la máscara, la del oficial
 MAX_ITER = 100               # :46
 TOL = 1.15                   # :47 y :193: por debajo, el ADMM se da por convergido
@@ -146,12 +149,92 @@ def carga_cosmos(directorio: str | Path) -> dict[str, np.ndarray]:
     return prepara_datos(params["phase_use"], params["kernel"], params["magn_use"], chi)
 
 
+def carga_sim2(directorio: str | Path) -> dict[str, np.ndarray]:
+    """`sim2.npz` de `directorio` (lo arma `datasets/prepara_sim2.py`), con las claves de
+    `carga_cosmos`. La máscara de α y la de evaluación son la misma: χ_GT no tiene ceros."""
+    z = np.load(Path(directorio) / SIM2_ARCHIVO)
+    phase, kernel, W2 = (z[k].astype(np.float32) for k in ("phase", "kernel", "W2"))
+    M = z["mascara"].astype(bool)
+    return {"phase": phase, "kernel": kernel, "K2": kernel * kernel, "W2": W2, "Wy": W2 * phase,
+            "mascara": M, "chi": z["chi"].astype(np.float32), "mascara_eval": M}
+
+
 def nrmse_pct(pred: np.ndarray, gt: np.ndarray, mascara: np.ndarray | None = None) -> float:
     """100·‖pred − gt‖/‖gt‖ sobre `mascara`: el `rmse` de `../tdv/ddr/utils.py:91`, que pese al
     nombre es un error relativo, no una raíz de media."""
     if mascara is None:
         mascara = np.ones_like(pred, dtype=bool)
     return float(100 * (np.linalg.norm(pred[mascara] - gt[mascara]) / np.linalg.norm(gt[mascara])))
+
+
+# --- MÉTRICAS DE χ ---------------------------------------------------------------------------
+
+def _enmascara(v: np.ndarray, m: np.ndarray) -> np.ndarray:
+    return np.where(m, v, 0).astype(np.float64)
+
+
+def _log_fansi(lado: int = 15, sigma: float = 1.5) -> np.ndarray:
+    """El laplaciano de gaussiana de `compute_hfen.m` de FANSI: 15³, σ = 1.5, de suma cero."""
+    r = (lado - 1) // 2
+    x, y, z = np.meshgrid(*(np.arange(-r, r + 1, dtype=np.float64),) * 3, indexing="ij")
+    d2 = x * x + y * y + z * z
+    h = np.exp(-d2 / (2 * sigma ** 2))
+    h /= h.sum()
+    H = (d2 / sigma ** 4 - 3 / sigma ** 2) * h
+    return H - H.sum() / H.size
+
+
+def hfen_pct(pred: np.ndarray, gt: np.ndarray, mascara: np.ndarray) -> float:
+    """El HFEN de FANSI: el NRMSE (%) entre los dos mapas filtrados con `_log_fansi`, con ceros
+    fuera de `mascara` y en el borde (su `imfilter`). Mide el error en los bordes y los detalles."""
+    H = _log_fansi()
+    g = _enmascara(gt, mascara)
+    error = signal.fftconvolve(_enmascara(pred, mascara) - g, H, mode="same")   # lineal
+    return float(100 * np.linalg.norm(error) / np.linalg.norm(signal.fftconvolve(g, H, mode="same")))
+
+
+def xsim(pred: np.ndarray, gt: np.ndarray, mascara: np.ndarray) -> float:
+    """El XSIM de `compute_xsim.m` de FANSI: un SSIM para QSM, sin reescalar los mapas (en ppm),
+    con L = 1, K = (0.01, 0.001), que lo hace sensible a las rayas, y una gaussiana de σ = 1.5 en
+    7³ con el borde replicado (`imgaussfilt3`), promediado en `mascara`. 1 es idéntico."""
+    p, g = _enmascara(pred, mascara), _enmascara(gt, mascara)
+
+    def f(v):
+        return ndimage.gaussian_filter(v, 1.5, mode="nearest", truncate=2.0)
+
+    c1, c2 = 0.01 ** 2, 0.001 ** 2
+    m1, m2 = f(p), f(g)
+    s1, s2, s12 = f(p * p) - m1 * m1, f(g * g) - m2 * m2, f(p * g) - m1 * m2
+    mapa = ((2 * m1 * m2 + c1) * (2 * s12 + c2)) / ((m1 * m1 + m2 * m2 + c1) * (s1 + s2 + c2))
+    return float(mapa[mascara].mean())
+
+
+def residuo_dato_pct(chi: np.ndarray, datos: dict[str, np.ndarray]) -> float:
+    """La consistencia con el dato: 100·‖W·(φ − D∗χ)‖/‖W·φ‖ en `mascara`, el término de datos del
+    ADMM en relativo. El de χ_GT es la referencia: por debajo, el mapa ajusta ruido."""
+    campo = np.real(np.fft.ifftn(datos["kernel"] * np.fft.fftn(chi)))
+    W, M = np.sqrt(datos["W2"].astype(np.float64)), datos["mascara"]
+    return float(100 * np.linalg.norm((W * (datos["phase"] - campo))[M])
+                 / np.linalg.norm((W * datos["phase"])[M]))
+
+
+def factor_cono(chi: np.ndarray, gt: np.ndarray, datos: dict[str, np.ndarray]) -> float:
+    """Cuánto se concentra el error (en `mascara_eval`) en el cono del dipolo, |D| < UMBRAL_CONO:
+    su fracción de energía ahí sobre la fracción del k-space que es cono, sin la componente
+    continua. 1 es un error blanco; más de 1, rayas."""
+    E2 = np.abs(np.fft.fftn(_enmascara(chi - gt, datos["mascara_eval"]))) ** 2
+    cono = np.abs(datos["kernel"]) < UMBRAL_CONO
+    E2.flat[0], cono.flat[0] = 0.0, False
+    return float(E2[cono].sum() / E2.sum() / cono.mean())
+
+
+def metricas_chi(chi: np.ndarray, datos: dict[str, np.ndarray]) -> dict[str, float]:
+    """NRMSE, HFEN y XSIM contra `datos["chi"]` en `mascara_eval`, la consistencia con el dato y
+    el factor del cono: lo que el panel de W&B muestra de cada reconstrucción."""
+    gt, Me = datos["chi"], datos["mascara_eval"]
+    return {"nrmse_pct": nrmse_pct(chi, gt, Me), "hfen_pct": hfen_pct(chi, gt, Me),
+            "xsim": xsim(chi, gt, Me), "residuo_dato_pct": residuo_dato_pct(chi, datos),
+            "factor_cono": factor_cono(chi, gt, datos)}
 
 
 # --- ADMM ------------------------------------------------------------------------------------
@@ -206,6 +289,7 @@ def admm_wtdv(denoisers: Sequence[Denoiser], datos: dict[str, np.ndarray], *, mu
     x_update: list[float] = []
     converged, motivo, alpha = False, "max_iter", 1.0
     subidas, mejor_nrmse, mejor_qsm = 0, math.inf, None   # para `subidas_para_cortar`
+    chi0 = None
     for t in range(max_iter):
         qsm_old = qsm.clone()
 
@@ -219,6 +303,7 @@ def admm_wtdv(denoisers: Sequence[Denoiser], datos: dict[str, np.ndarray], *, mu
         qsm = torch.real(torch.fft.ifftn(numerator / denominator)).to(torch.float32)
 
         if t == 0:
+            chi0 = (qsm * mask_f).cpu().numpy()   # la primera reconstrucción, sin la red
             qsm_std = torch.std(qsm[mask])
             alpha = target_std / qsm_std.item() if qsm_std.item() > 0 else 1.0
 
@@ -269,7 +354,7 @@ def admm_wtdv(denoisers: Sequence[Denoiser], datos: dict[str, np.ndarray], *, mu
     if mejor_qsm is not None and motivo != "no_finito":
         qsm, nrmse_final = mejor_qsm, mejor_nrmse
     return {
-        "chi": (qsm * mask_f).cpu().numpy(), "nrmse": nrmse, "x_update": x_update, "alpha": alpha,
+        "chi": (qsm * mask_f).cpu().numpy(), "chi0": chi0, "nrmse": nrmse, "x_update": x_update, "alpha": alpha,
         "iteraciones": len(nrmse), "motivo": motivo, "nrmse_final": nrmse_final,
         "nrmse_min": nrmse_min, "it_min": it_min, "k": k,
         "segundos": time.perf_counter() - t0,
@@ -447,12 +532,14 @@ def cortes_centrales(vol: Any, rango: tuple[float, float],
 
 
 def lamina_qsm(chi: Any, gt: Any, mascara: Any, rango: tuple[float, float] = RANGO_QSM,
-               orientacion: tuple[int, int, int] = ORIENTACION_COSMOS) -> np.ndarray:
-    """Filas GT | reconstrucción | error, las tres en `mascara` y en el mismo `rango`: el error a
-    la escala de chi, no ampliado."""
+               orientacion: tuple[int, int, int] = ORIENTACION_COSMOS,
+               chi0: Any = None) -> np.ndarray:
+    """Filas GT | χ₀ (con `chi0`: la primera reconstrucción, sin la red) | reconstrucción |
+    error, todas en `mascara` y en el mismo `rango`: el error a la escala de chi, no ampliado."""
     chi, gt = _volumen(chi), _volumen(gt)
     m = _volumen(mascara) > 0
-    filas = (gt * m, chi * m, (chi - gt) * m)
+    previas = (gt * m,) if chi0 is None else (gt * m, _volumen(chi0) * m)
+    filas = (*previas, chi * m, (chi - gt) * m)
     return _junta([cortes_centrales(f, rango, orientacion) for f in filas], eje=0)
 
 

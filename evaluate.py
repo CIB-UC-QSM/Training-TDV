@@ -107,14 +107,17 @@ def evaluate_denoising3d(model, dataset, sigma=25.0, device="cpu", seed=1234, da
         if cerebro is not None:
             m = torch.from_numpy(cerebro[i])[None, None]
             rows[-1].update(psnr_noisy_cerebro=psnr(noisy[m], clean[m], data_range),
-                            psnr_denoised_cerebro=psnr(denoised[m], clean[m], data_range))
+                            psnr_denoised_cerebro=psnr(denoised[m], clean[m], data_range),
+                            nrmse_noisy_cerebro=nrmse_pct(noisy.double().numpy(), y, m.numpy()),
+                            nrmse_denoised_cerebro=nrmse_pct(x, y, m.numpy()))
         if devuelve_primero and i == 0:
             primero = (clean[0, 0].numpy(), noisy[0, 0].numpy(), denoised[0, 0].numpy())
 
     claves = ["psnr_noisy", "psnr_denoised", "psnr_noisy_tejido", "psnr_denoised_tejido",
               "nrmse_denoised", "nrmse_denoised_tejido"]
     if cerebro is not None:
-        claves += ["psnr_noisy_cerebro", "psnr_denoised_cerebro"]
+        claves += ["psnr_noisy_cerebro", "psnr_denoised_cerebro", "nrmse_noisy_cerebro",
+                   "nrmse_denoised_cerebro"]
     return {
         "sigma": sigma,
         "num_volumenes": len(rows),

@@ -552,6 +552,39 @@ def test_punto_qsm3d_es_la_entrada_del_primer_denoiser(sintetico):
 
 # --- NRMSE -----------------------------------------------------------------------------------
 
+def test_metricas_de_fansi_en_los_extremos():
+    """HFEN y XSIM como `compute_hfen.m` y `compute_xsim.m` de FANSI: un mapa contra sí mismo da
+    0 y 1, el LoG suma cero, y el HFEN no cambia con la escala de los dos mapas."""
+    rng = np.random.default_rng(2)
+    gt = ndimage.gaussian_filter(rng.standard_normal((24, 26, 28)), 2).astype(np.float32)
+    m = np.ones(gt.shape, dtype=bool)
+    m[:3] = False
+    pred = gt + 0.1 * gt.std() * rng.standard_normal(gt.shape).astype(np.float32)
+    assert abs(qsm3d._log_fansi().sum()) < 1e-12 and qsm3d._log_fansi().shape == (15, 15, 15)
+    assert qsm3d.hfen_pct(gt, gt, m) == 0.0
+    assert qsm3d.xsim(gt, gt, m) == pytest.approx(1.0)
+    assert qsm3d.hfen_pct(3 * pred, 3 * gt, m) == pytest.approx(qsm3d.hfen_pct(pred, gt, m))
+    assert 0 < qsm3d.hfen_pct(pred, gt, m) and qsm3d.xsim(pred, gt, m) < 1
+
+
+def test_residuo_y_cono():
+    """El residuo es 0 si la fase es exactamente D∗χ, y el factor del cono de un error blanco
+    ronda 1."""
+    rng = np.random.default_rng(3)
+    k = np.meshgrid(*(np.fft.fftfreq(N),) * 3, indexing="ij")
+    k2 = sum(ki ** 2 for ki in k)
+    k2[0, 0, 0] = 1.0
+    D = (1 / 3 - k[2] ** 2 / k2).astype(np.float32)
+    D[0, 0, 0] = 0.0
+    chi = ndimage.gaussian_filter(rng.standard_normal((N,) * 3), 1).astype(np.float32)
+    M = np.ones(chi.shape, dtype=bool)
+    datos = {"phase": np.real(np.fft.ifftn(D * np.fft.fftn(chi))).astype(np.float32),
+             "kernel": D, "W2": np.ones_like(chi), "mascara": M, "chi": chi, "mascara_eval": M}
+    assert qsm3d.residuo_dato_pct(chi, datos) == pytest.approx(0.0, abs=1e-4)
+    blanco = chi + rng.standard_normal(chi.shape).astype(np.float32)
+    assert qsm3d.factor_cono(blanco, chi, datos) == pytest.approx(1.0, abs=0.15)
+
+
 def test_nrmse_pct_es_el_rmse_del_autor():
     rng = np.random.default_rng(1)
     gt = rng.standard_normal((9, 10, 11)).astype(np.float32)

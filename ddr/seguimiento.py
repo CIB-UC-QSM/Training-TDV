@@ -286,6 +286,18 @@ def registra_imagenes(run, imagenes: dict, paso: int, leyendas: dict | None = No
     _protegido(run, "registra_imagenes", accion)
 
 
+def alerta(run, titulo: str, texto: str) -> None:
+    """Una alerta de W&B: llega por correo o Slack si la cuenta tiene encendidas las «Scriptable run
+    alerts». Va fuera de `_protegido`: si falla (offline no las manda), avisa en el log y no apaga
+    el registro de métricas."""
+    if run is None or _CORRIDAS.get(id(run), {}).get("caido"):
+        return
+    try:
+        run.alert(title=titulo, text=texto, level="WARN")
+    except Exception as e:
+        print(f"seguimiento: la alerta «{titulo}» no salió ({type(e).__name__}: {e})", flush=True)
+
+
 def resumen(run, datos: dict) -> None:
     """Escribe `datos` en el resumen de la corrida (la tabla de corridas de W&B)."""
     _protegido(run, "resumen", lambda: run.summary.update(dict(datos)))
@@ -313,6 +325,8 @@ EXTREMOS = {
     "val/psnr": "max", "val/psnr_tejido": "max", "val/psnr_cerebro": "max",
     "val/nrmse_pct": "min", "val/nrmse_pct_tejido": "min",
     "qsm/nrmse_final_pct": "min", "qsm/nrmse_min_pct": "min",
+    "val/nrmse_pct_cerebro": "min", "qsm/hfen_pct": "min", "qsm/xsim": "max",
+    "qsm_sim2/nrmse_min_pct": "min", "qsm_sim2/hfen_pct": "min", "qsm_sim2/xsim": "max",
 }
 
 
