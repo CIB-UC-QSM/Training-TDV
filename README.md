@@ -442,21 +442,19 @@ log lo avisa).
    systemctl --user stop tdv-3d-largo     # la para: se pierde lo posterior al último estado-<it>.pth
    ```
 
-   **Propuesta, pendiente de aprobación del autor (2026-10-21): `--qsm-target-std 0.25
-   --guardar-cada 500`.** En la etapa 2, con la red control y con `prep3d-g10-s2-2500`, en COSMOS
-   y en Sim2, 0.06 fue el peor de {0.02, 0.06, 0.25, 0.35}, 2.6–7.7 pp de NRMSE sobre 0.25, con
-   HFEN también peor; la regla pre-registrada (estable en los dos sujetos y menor distancia en el
-   peor caso al mejor α de cada uno) dio 0.25 en las dos redes (bitácora, «Etapa 2»). Los estados
-   cada 500 (200 en 100 000 iteraciones, ~9.4 GB) dejan reevaluar después cada checkpoint a 0.02,
-   0.06 y 0.25, porque entre 0.02 y 0.25 decide la métrica. Sin aprobar, el comando de arriba sigue
-   siendo el vigente.
+   **La evaluación QSM va a tres targets (2026-10-25): `--qsm-target-std 0.15 0.02 0.05`, con
+   `--guardar-cada 500`.** Con el target fijo en 0.25, el QSM de la ciega parecía empeorar al
+   entrenar; con el mejor de varios, mejora. El mejor depende del sujeto: 0.02 en COSMOS y
+   0.05–0.055 en Sim2, y 0.15 queda como el estable. `best_qsm.pth` y la meseta usan el de menor
+   NRMSE, y μ queda en 0.008 (bitácora, «Grid de target 0.02–0.06, μ y ADMM en dos rondas»). Con
+   un estado cada 500, cada checkpoint se puede reevaluar después a otros targets.
 
    ```bash
    systemd-run --user --collect --unit tdv-3d-largo -p WorkingDirectory=$PWD bash -c \
        ".venv/bin/python -u train3d.py --out runs/3d-largo --iterations 100000 --hitos \
         --meseta 10 --meseta-desde 10000 --meseta-psnr --guard 10 --mascara-cerebro \
         --seguimiento online --eval-every 100 --eval-qsm-cada 500 --guardar-cada 500 \
-        --qsm-target-std 0.25 > runs/3d-largo.log 2>&1"
+        --qsm-target-std 0.15 0.02 0.05 > runs/3d-largo.log 2>&1"
    ```
 
    `--collect` va siempre. Sin él, una unidad que falla queda «failed»: por ejemplo, con un corte
@@ -506,7 +504,8 @@ justificadas en sus notas finales. `--sigma` (25, en 0–255) fija también la �
 `--qsm-max-iter` (25) es el techo de iteraciones del ADMM, que para antes si el NRMSE sube dos
 iteraciones seguidas. `--qsm-target-std` (0.06, el del oficial 2D) fija α: la desviación de α·χ₀
 en la máscara, la escala con que la red ve χ en la evaluación QSM y en su punto de estabilidad;
-queda en `config.json` y en cada fila de `qsm.jsonl`. `--meseta`,
+queda en `config.json` y en cada fila de `qsm.jsonl`. Con varios valores el ADMM corre a cada
+uno y cuenta el de menor NRMSE mínimo (`qsm/mejor_target`; cada uno en `qsm_t<target>/*`). `--meseta`,
 `--meseta-mitades`, `--meseta-desde`, `--meseta-psnr` y `--sobreajuste` vienen apagadas (arriba,
 «Entrenar en 3D»), y
 `train.py` tiene también `--sigma-min/--sigma-max`. El resto, con sus valores por defecto, está en

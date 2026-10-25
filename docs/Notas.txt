@@ -54,3 +54,38 @@ systemd-run --user --collect --unit tdv-3d-largo -p WorkingDirectory=$PWD bash -
 ".venv/bin/python -u train3d.py --out runs/3d-largo --iterations 100000 --hitos \
 --meseta 3 --guard 10 --mascara-cerebro --seguimiento online --eval-every 2500 \
 --guardar-cada 2500 > runs/3d-largo.log 2>&1"
+
+PARA PENSAR A FUTURO (23-10), de más a menos costo-efectivo. «efecto» es lo que se espera ganar, «tiempo» lo que cuesta.
+
+1. Elegir el mejor α en cada evaluación (0.25, 0.06 y 0.02; best_qsm por el menor NRMSE, y se registra el target).
+   El barrido del 23-10 mostró por qué: con el target fijo en 0.25 el QSM parecía empeorar al entrenar; con el mejor target de cada
+   checkpoint mejora (COSMOS 30.71 → 27.77 % a 0.02, de la 1 488 a la 4 960).
+   - efecto: best_qsm deja de estar sesgado por un target fijo; se ve si a 0.06 el NRMSE baja con el entrenamiento.  | tiempo: horas de código; +~10 % por evaluación.  [EN CURSO, entra en la rama a 20 000]
+2. lr/2 cuando la curva se aplane (--hitos <it> en una rama, sin tocar código).
+   - efecto: suele dar un escalón de mejora en PSNR y pérdida.  | tiempo: nada de código; sólo esperar a ver el aplanamiento.
+3. Barrido final de target sobre el último checkpoint (0.04–0.15, 100 iteraciones; pre-registrado en la bitácora el 23-10).
+   - efecto: dice dónde queda el α óptimo de la red entrenada y prueba la predicción (~0.11 COSMOS, ~0.09 Sim2).  | tiempo: ~3 h de GPU, sin código.
+4. Prueba de linealidad estilo QSMnet+ (Jung et al., NeuroImage 2020), sólo como diagnóstico: escalar una región (una «hemorragia» simulada) y ver si la salida escala igual.
+   - efecto: nuestra α por std es lineal ante un escalado global, pero no ante uno local; esto mide cuánto se pierde.  | tiempo: ~1–2 h (script chico + GPU).
+5. Pseudo-3D oficial (2D, k = 3) a α alto (0.25–0.35) en ../tdv (pendiente desde el 21-10).
+   - efecto: separa si «α alto es mejor» es del ADMM y el cono o de nuestra red.  | tiempo: ~1 h.
+6. Aumento de ganancia en el entrenamiento (QSMnet+, Jung et al. 2020): cada parche limpio por una ganancia log-uniforme en [1/16, 1], el ruido en unidades absolutas.
+   Hacerlo como fine-tuning desde el checkpoint final («fine-tuning», «warm-starting»: Ash & Adams, NeurIPS 2020), con lr más bajo y una parte de los parches con ganancia 1
+   («rehearsal», contra el «catastrophic forgetting»), y un control entrenado desde cero con la misma receta (Ash & Adams: partir de pesos puede generalizar peor).
+   - efecto: la red deja de depender de α; éxito si el NRMSE queda a ±1 pp en un rango de targets de 4×.  | tiempo: ~1 día (código en ddr/data3d.py, bandera de pesos iniciales, dos corridas cortas y un barrido).
+7. --sigma-max 85/255 (puede ir en la misma corrida que el 6).
+   - efecto: incierto: cubre más ruido, pero el error de χ₀ es sobre todo suave (sólo 20–30 % es grano fino, 23-10).  | tiempo: una bandera; el costo es la corrida.
+8. Calendario por iteración del ADMM estilo DPIR (Zhang et al., TPAMI 2021): α o μ que cambian en cada iteración y un número fijo de iteraciones.
+   - efecto: podría arreglar que el ADMM no converge; agrega perillas.  | tiempo: 1–2 días de barridos, sin reentrenar.
+   Probado el 25-10 el cambio fuerte → suave a mitad de camino (0.02 → 0.05/0.15/0.25): no sirve, el ADMM se va a la solución del target suave.
+9. TDV sin sesgos («bias-free CNN», Mohan, Kadkhodaie, Simoncelli, Fernandez-Granda, ICLR 2020): equivariante a escala, α desaparece por construcción.
+   - efecto: grande si funciona; μ queda como única perilla.  | tiempo: semanas (arquitectura nueva y reentrenar desde cero).
+10. TDV condicionado al nivel de ruido (FFDNet / DRUNet / DPIR, Zhang et al.): σ como entrada, ligado a μ (α_k = λσ²/σ_k²): una sola perilla de verdad.
+   - efecto: grande; la perilla se vuelve interpretable.  | tiempo: semanas.
+11. PnP sin ajuste («tuning-free PnP», Wei et al., ICML 2020 / JMLR 2022): una política aprendida (aprendizaje por refuerzo) fija la fuerza del denoiser y la penalización.
+   - efecto: no hay perillas a mano.  | tiempo: meses; investigación aparte.
+
+Unificar α dentro de μ: sólo después del 6 o del 9. Con la red de hoy no son la misma perilla (μ pesa la salida de la red contra el dato, lineal; α cambia lo que hace la red, no lineal).
+Descartado (medido el 23-10): α por ruido estimado de χ₀ (MAD de wavelets: ve el 20–30 % del error y separa peor a los sujetos que la std) y el principio de discrepancia
+   (todas las reconstrucciones ya dejan menos residuo que el χ verdadero).
+Para buscar: «denoiser scaling plug-and-play» (Xu, Kamilov et al. 2020: nuestro α es su escala), «curriculum learning» (Bengio 2009), «catastrophic forgetting rehearsal».

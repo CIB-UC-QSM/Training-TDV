@@ -56,12 +56,11 @@ se decidió. El porqué de cada constante del código está en
 - **Una falla en la validación de denoising corta la corrida:** `valida` llama a
   `valida_denoising` sin `try`, a diferencia de la estabilidad y el ADMM (auditoría, 2026-10-16;
   verificado el 2026-10-20).
-- **El α de la evaluación QSM, por decidir:** el default de `--qsm-target-std` es el del 2D, 0.06
-  (α = 4.86 en COSMOS), y en la etapa 2 fue el peor de cuatro en dos redes y dos sujetos, y otra
-  vez en E1. La propuesta es 0.25, que en la práctica es un α fijo (20–22), con estados cada 500
-  para reevaluar a 0.02, 0.06 y 0.25 (README, paso 6; «Etapa 2» y «E0»). La regla de target_std no
-  se cambia: mide el contenido de χ₀, no su error, y ninguna variante robusta separa a los sujetos
-  («La distribución de χ₀»). μ = 0.008 queda fijo (el autor, 2026-10-21).
+- **El α de la evaluación QSM, decidido (el autor, 2026-10-25):** la evaluación corre a varios
+  targets y cuenta el de menor NRMSE; para la rama a 20 000, 0.15, 0.02 y 0.05, con μ = 0.008
+  («Grid de target 0.02–0.06, μ y ADMM en dos rondas»). La regla de target_std (la std de χ₀)
+  no se cambia: ninguna variante robusta separa a los sujetos («La distribución de χ₀»), ni una
+  α por el ruido estimado de χ₀ («¿α sin GT?»).
 - **Después del entrenamiento:** una parada del ADMM sin referencia (TOL/CORTE con un grid, o
   otra), con las trayectorias de `qsm.jsonl`; la escala de χ en QSM-TDV; `λ` en QSM, sin medir.
 - **Si `wandb` queda como dependencia obligatoria** (hoy lo es en `pyproject.toml`) o pasa a extra.
@@ -2035,7 +2034,8 @@ ciega.
   - Sim2 con el último, a 0.25–0.30, se va: el mínimo cae en t = 3–5 y después sube a 45.0 y
     48.4 %.
 - **`best_qsm` es mejor prior que el último** en 7 de las 8 combinaciones. La excepción es COSMOS
-  con 0.15.
+  con 0.15. Sólo en 0.15–0.30: con el mejor target de cada uno, el último gana en los dos sujetos
+  (RESULTADO del barrido 0.02 / 0.06 / 0.12, abajo).
 - **El target bueno baja con el entrenamiento.** En COSMOS es 0.25 con `best_qsm` y 0.15 con el
   último. En Sim2 es 0.15, el borde, con los dos.
   - Con 0.15 el último le gana a `best_qsm` en COSMOS (32.15 contra 32.82 %). Parte del QSM que
@@ -2119,3 +2119,182 @@ arriba; sin GPU).
   unidades absolutas), para que la red vea imágenes tenues con todo el rango de ruido. Se mide con
   una corrida corta y el barrido 0.02–0.30: sirve si el NRMSE queda a ±1 pp en un rango de targets
   de 4×. Mientras tanto, la evaluación elige el mejor de sus targets (α oráculo, con GT).
+
+**RESULTADO del barrido 0.02 / 0.06 / 0.12** (GPU 0, 21:57–23:30; mismo `resultados.json`). La
+tabla entera, NRMSE mínimo (t) · update en t = 99 (%), con el mejor de cada columna en negrita:
+
+| target | COSMOS, `best_qsm` (1 488) | COSMOS, último (4 960) | Sim2, `best_qsm` | Sim2, último |
+|---|---|---|---|---|
+| 0.02 | **30.71** (12) · 0.84 | **27.77** (14) · 1.32 | 39.67 (99) · 0.91 | 38.56 (99) · 0.23 |
+| 0.06 | 38.07 (4) · 0.96 | 31.95 (10) · 0.28 | 39.86 (99) · 0.24 | **37.08** (99) · 0.23 |
+| 0.12 | 34.64 (63) · 0.99 | 32.28 (13) · 0.20 | **37.37** (99) · 0.91 | 37.68 (99) · 0.21 |
+| 0.15 | 32.82 (34) · 0.50 | 32.15 (11) · 0.18 | 37.72 (99) · 0.81 | 38.98 (99) · 0.19 |
+| 0.20 | 31.22 (34) · 0.15 | 32.45 (34) · 0.14 | 39.30 (98) · 0.38 | 41.72 (99) · 0.15 |
+| 0.25 | 30.81 (35) · 0.12 | 32.99 (69) · 0.11 | 41.51 (99) · 0.13 | 44.57 (5) · 0.13 |
+| 0.30 | 31.11 (65) · 0.10 | 33.88 (69) · 0.10 | 44.34 (99) · 0.11 | 46.06 (3) · 0.11 |
+
+- **En COSMOS el NRMSE no es monótono en el target:** 0.06 es el peor con los dos checkpoints y
+  0.02 el mejor, con un segundo valle ancho en 0.15–0.25. Es el patrón de la control del 21-10
+  (0.06, el peor de cuatro).
+- **El último a 0.02 da 27.77 % en COSMOS:** 5.2 pp bajo su 0.25, y cerca del pseudo-3D oficial
+  (25.94–26.08 %). No converge: el mínimo cae en t = 14, en t = 99 está en 29.25 % y el update
+  volvió sobre el TOL (1.32 %). Aun así, en t = 99 queda bajo todo lo demás.
+- **En Sim2 los targets bajos siguen bajando en t = 99,** y de 0.02 a 0.15 caen en ~2.5 pp.
+- **Con el mejor target de cada checkpoint, el último gana en los dos sujetos** (27.77 contra
+  30.71 % en COSMOS; 37.08 contra 37.37 % en Sim2). El empeoramiento del QSM entre la 1 488 y la
+  4 960 era del target fijo en 0.25, no de la red.
+- **Predicciones: se cumple 1 de 4.** Fallan «0.12 el mejor de los tres en COSMOS» (lo es 0.02),
+  «0.06 y 0.12 a menos de 1 pp en Sim2» (2.5 pp con `best_qsm`) y «0.02 sube después de t = 20 en
+  3 de 4» (sólo en COSMOS). Se cumple «el update a 0.12 queda sobre el de 0.15» (en las 4). El
+  pre-registro del target óptimo final (0.07–0.13) ya queda fuera con el último en COSMOS.
+- **Control de la evaluación de W&B** (`scripts/qsm_targets_wandb.py evalua 0.25 --estados 1488`):
+  reproduce la del entrenamiento (30.88 % en COSMOS y 42.13 % en Sim2, t = 24 de 25).
+- **Consecuencia:** a la evaluación de la rama a 20 000 se le suma 0.02 (0.25, 0.06 y 0.02).
+
+**RESULTADO de las curvas por target** (`scripts/qsm_targets_wandb.py`, GPU 0, 23:40–01:20; la
+evaluación del entrenamiento, 25 iteraciones, sobre los 16 estados de la 496 a la 7 936; W&B
+`ciego-epocas-l32-10k-targets`). NRMSE mínimo en la 496 → 1 488 → 4 960 → 7 936:
+
+| | 0.25 (la del entrenamiento) | 0.06 | 0.02 |
+|---|---|---|---|
+| COSMOS | 35.87 → 30.88 → 33.09 → 35.36 | 39.34 → 38.07 → 31.95 → 30.82 | 35.12 → 30.71 → 27.77 → **27.08** |
+| Sim2 | 47.27 → 42.13 → 44.57 → 45.16 | 45.52 → 40.79 → 37.99 → **36.02** | 46.14 → 40.64 → 40.02 → 39.81 |
+
+- **A 0.02 y 0.06 el QSM mejora con el entrenamiento;** a 0.25 empeora desde la 1 488. La curva de
+  W&B de la corrida, a 0.25, mostraba la contraria de lo que aprende la red.
+- **El mejor target depende del sujeto:** 0.02 en COSMOS (27.08 %), 0.06 en Sim2 (36.02 %), y el
+  segundo de cada uno queda 3.7–3.8 pp atrás.
+- **Hasta la 10 000** (los 5 estados que faltaban, 24-10, GPU 0): en la 10 000, COSMOS a 0.02 da
+  26.73 % (el mínimo, 26.51 %, en la 8 928 y la 9 920) y Sim2 a 0.06 da 35.49 %. Desde la
+  8 432 las dos curvas quedan casi planas: varían 0.3 pp o menos.
+
+**RESULTADO de `ciego-epocas-l32-10k`: terminó la 10 000 sin cortes** (24-10, 04:18; 25.89 h en
+total; W&B `b3vm1g37` desde la 4 960).
+- **Denoising en el cerebro, en la 10 000:** el mejor PSNR de la corrida, 33.787 dB. NRMSE de
+  entrada → salida: SNR 25, 12.19 → 4.18 %; SNR 50, 6.10 → 3.27 %; SNR 100, 3.05 → 2.17 %.
+- **El disyuntor 3D actuó una vez:** 25 rechazos seguidos en la 9 768 y un rebobinado a la 9 711,
+  sin TRABADA. 25 lotes rechazados de 10 000; iteración efectiva 9 943. VRAM pico 11.51 GiB.
+- **QSM a 0.25 (la evaluación de la corrida):** 34.95 % en COSMOS y 45.06 % en Sim2; `best_qsm`
+  sigue siendo el de la 1 488 (30.88 %). A 0.02 y 0.06 la red mejora (curvas por target, arriba).
+
+## 2026-10-24 — La rama a 20 000: `ciego-epocas-l32-20k`
+
+**PRE-REGISTRO**, escrito antes de lanzar (regla 5) y rehecho el 25-10 antes del segundo
+lanzamiento, con los targets nuevos. Rama de `ciego-epocas-l32-10k` desde `estado-010000.pth`, con
+las mismas banderas, lr constante (sin lr/2: el autor no ve aplanarse la curva) y
+`--qsm-target-std 0.15 0.02 0.05`, μ = 0.008. El ruido queda igual (`--sigma-max 55`): a 0.02 y
+0.05 el error de la primera iteración que ve la red está dentro del rango entrenado (a 0.05, 0.075
+en COSMOS y 0.086 en Sim2, contra 0.216); a 0.15 queda en el borde (0.22–0.26), con su parte fina
+(0.05–0.06) dentro. Además, una rama no puede cambiar la receta.
+W&B abre una corrida nueva desde la 10 001, en el grupo `ciego-epocas-l32`. ~28 h en la GPU 1.
+- **Pregunta:** si 10 000 iteraciones más, sin lr/2, siguen mejorando el denoising y el QSM al
+  mejor target.
+- **Predicción:**
+  - el PSNR en el cerebro sube 0.2–0.6 dB sobre 33.79;
+  - el QSM al mejor target (evaluación de 25 iteraciones) sigue bajando: COSMOS (0.02) de 26.7 a
+    25.5–26.7 %, Sim2 (0.05) de 36.0 a 34–35.5 %;
+  - 0.15 queda peor que los otros dos en los dos sujetos;
+  - el mejor target no cambia: 0.02 en COSMOS y 0.05 en Sim2 en las últimas 5 evaluaciones;
+  - a lo sumo 3 rebobinados y ninguna TRABADA.
+- **Se reporta:** el PSNR en el cerebro, el NRMSE de los tres niveles de SNR, el QSM por target y
+  sujeto en cada evaluación, los rebobinados y las alertas.
+
+**El primer intento murió a los 6 minutos, sin culpa del entrenamiento** (24-10, 05:12; visto a
+las 16:17). A las 05:12:14 se cerró la última sesión de login del usuario (la que abrió el 19-10 la
+sesión de Claude Code que lanzaba las corridas), y con `Linger=no` systemd paró todo el gestor de
+usuario (`exit.target`), con la unidad de la corrida adentro. El log no tiene error: llega a la
+10 025. No hay estado nuevo (el último es el de la 10 000) y se pierden ~6 minutos. La corrida de
+W&B `zkuxpf7m` queda con un punto. Arreglo: `loginctl enable-linger`, para que el gestor de usuario
+no dependa de una sesión abierta; las de 10 000 sobrevivieron porque esa sesión siguió abierta.
+
+## 2026-10-25 — Grid de target 0.02–0.06, μ y ADMM en dos rondas, con la red de la 10 000
+
+**RESULTADO del grid de target** (`scripts/barrido_target_ciega.py --ckpts final`, checkpoint de
+la 10 000, 100 iteraciones sin corte; GPU 0 y 1 a la vez con permiso del autor, 13:20–14:50;
+`barrido-target/grid-gpu{0,1}.json`). NRMSE mínimo (t) · NRMSE en t = 99 · update en t = 99 (%) y
+la primera t con update < TOL (— si nunca):
+
+| target | COSMOS | Sim2 |
+|---|---|---|
+| 0.02 | **26.73** (16) · 27.67 · 1.46 · — | 38.55 (99) · 38.55 · 1.66 · — |
+| 0.025 | 27.27 (16) · 28.55 · 0.46 · 18 | 37.95 (98) · 37.95 · 2.08 · — |
+| 0.03 | 27.80 (13) · 29.57 · 0.26 · 19 | 37.23 (99) · 37.23 · 1.85 · — |
+| 0.035 | 28.48 (11) · 30.59 · 0.42 · 19 | 36.26 (99) · 36.26 · 2.87 · — |
+| 0.04 | 29.13 (12) · 31.24 · 0.52 · 23 | 35.32 (99) · 35.32 · 1.62 · — |
+| 0.045 | 29.60 (10) · 31.89 · 0.86 · 21 | 34.66 (98) · 34.67 · 2.28 · — |
+| 0.05 | 30.14 (9) · 32.38 · 1.81 · 25 | 34.29 (98) · 34.34 · 2.68 · — |
+| 0.055 | 30.54 (10) · 32.78 · 2.52 · 34 | **34.11** (98) · 34.22 · 3.43 · — |
+| 0.06 | 30.83 (10) · 33.01 · 3.68 · 37 | 34.20 (99) · 34.20 · 3.46 · — |
+
+- **Los sujetos tiran para lados opuestos:** en COSMOS el NRMSE sube con el target (0.02 el
+  mejor), en Sim2 baja hasta 0.055.
+- **Ninguno converge de verdad en Sim2:** el update en t = 99 queda en 1.6–3.5 % y nunca baja del
+  TOL. En COSMOS, 0.025–0.045 bajan del TOL en t = 18–23; 0.02 no.
+- **0.055 domina a 0.06 en los cuatro números** (NRMSE y update, en los dos sujetos); 0.05 los
+  domina salvo el NRMSE de Sim2 (+0.09 pp).
+- **Con `best_qsm` (la 1 488)**, a 0.03, 0.04 y 0.05 (`grid-gpu1b.json`), junto con 0.02 y 0.06 del
+  23-10: COSMOS 30.71, 31.51, 33.52, 36.07 y 38.07 %; Sim2 39.67, 40.32, 40.36, 40.34 y 39.86 %. El
+  checkpoint de la 10 000 es mejor a todos los targets, 3.7–7.2 pp en COSMOS y 1.1–6.1 pp en Sim2. Con
+  `best_qsm`, Sim2 sí baja del TOL (t = 22) y COSMOS también (t = 18–26).
+
+**RESULTADO de μ** (`barrido_target_ciega.py --ckpts final --mu …`, GPU 0 a target 0.02 y GPU 1 a
+0.05; `mu-gpu{0,1}.json`). NRMSE mínimo · update en t = 99 (%), con μ₂ = 1:
+
+| μ | COSMOS 0.02 | Sim2 0.02 | COSMOS 0.05 | Sim2 0.05 |
+|---|---|---|---|---|
+| 0.006 | 26.65 · 2.23 | 38.08 · 2.33 | 29.33 · 6.46 | 34.52 · 6.13 |
+| 0.007 | 26.73 · 1.40 | 38.28 · 2.11 | 29.74 · 3.78 | 34.29 · 4.24 |
+| 0.008 | 26.73 · 1.46 | 38.55 · 1.66 | 30.14 · 1.81 | 34.29 · 2.68 |
+| 0.009 | 26.72 · 1.04 | 38.87 · 1.59 | 30.45 · 0.82 | 34.37 · 1.86 |
+| 0.01 | 26.77 · 0.77 | 39.19 · 1.17 | 30.83 · 0.47 | 34.52 · 1.37 |
+
+- **Subir μ siempre mejora la convergencia** (el update en t = 99 baja en los cuatro casos; COSMOS
+  baja del TOL desde 0.009) y, como se predijo, no arregla el cono: el NRMSE mínimo se mueve
+  ≤ 1.5 pp.
+- **El costo en NRMSE cae en un sujeto u otro según el target:** a 0.02, plano en COSMOS y +1.1 pp
+  en Sim2 de 0.006 a 0.01; a 0.05, +1.5 pp en COSMOS y plano en Sim2.
+- **Más allá de 0.01, a 0.02** (el autor pidió seguir si 0.01 ganaba; ganaba en convergencia):
+  μ = 0.0125 y 0.015 dan COSMOS 27.00 y 27.49 % (estable: 27.09 y 27.50 en t = 99, bajo el
+  TOL desde t = 17–18) y Sim2 39.51 y 39.92 %, con el update de Sim2 peor que a 0.01 (2.71 y
+  2.85 %).
+- **Se queda μ = 0.008:** ningún μ gana en los cuatro casos; subirlo compra convergencia con
+  NRMSE, y pasado 0.01 empeora Sim2 en las dos cosas. La convergencia se ataca con el ADMM en
+  dos rondas (abajo).
+
+**RESULTADO del ADMM en dos rondas** (`scripts/admm_dos_rondas.py`, checkpoint de la 10 000,
+μ = 0.008, 100 iteraciones; GPU 0 y 1; `rondas-gpu{0,1}.json`). Empieza con el primer target y
+pasa al siguiente cuando el update baja del TOL o se estanca (≥ 0.95 del de dos iteraciones antes);
+cambió en t = 18–21, salvo 0.05 → 0.15 en Sim2 (t = 7). NRMSE mínimo (t) · en t = 99 · update en
+t = 99 (%):
+
+| calendario | COSMOS | Sim2 |
+|---|---|---|
+| 0.02 sola (grid) | 26.73 (16) · 27.67 · 1.46 | 38.55 (99) · 38.55 · 1.66 |
+| 0.05 sola (grid) | 30.14 (9) · 32.38 · 1.81 | 34.29 (98) · 34.34 · 2.68 |
+| 0.02 → 0.05 | 26.73 (16) · 32.34 · 1.96 | 34.31 (99) · 34.31 · 2.45 |
+| 0.02 → 0.15 | 26.73 (16) · 34.65 · 8.20 | 39.94 (21) · 41.73 · 6.44 |
+| 0.02 → 0.25 | 26.73 (16) · 35.69 · 8.22 | 40.32 (20) · 48.73 · 5.86 |
+| 0.05 → 0.15 | 30.14 (9) · 34.75 · 7.97 | 40.17 (9) · 41.29 · 6.50 |
+| 0.02 → 0.05 → 0.15 | 26.73 (16) · 34.72 · 8.17 | 38.67 (21) · 41.83 · 6.35 |
+
+- **Pasar de un denoiser fuerte a uno suave no ayuda:** después del cambio el ADMM se va a la
+  solución del target suave, peor, y el update sube a 6–8 %. Ninguno converge mejor que su target
+  solo.
+- **0.02 → 0.05 en Sim2 queda igual que 0.05 sola** (34.31 contra 34.29 %); en COSMOS pierde lo de
+  0.02 (32.34 en t = 99).
+- **Veredicto: no.** Se descartan los calendarios fuerte → suave con este cambio; queda en «Lo que no
+  sirve».
+
+**W&B, limpio** (25-10, con el OK del autor). Queda una corrida por tramo:
+- **`ciego-epocas-l32-10k`**, una sola (`scripts/consolida_wandb_10k.py`), armada con los archivos
+  locales:
+  - `train/*` de las 10 000 iteraciones, de `traza.npy`;
+  - la validación de `history.json`, con los niveles de SNR sólo desde la 5 456 (antes, la
+    convención vieja);
+  - el QSM de los 21 estados a 0.15, 0.02 y 0.05 con las claves de `train3d.py`.
+  - Su id quedó en `seguimiento.json`, así que la rama a 20 000 se enlaza a ella.
+- **Se borraron** las corridas de W&B de panel-l8, ciego-epocas-l32, las tres de la 10k partida,
+  la de targets y el intento de 6 minutos de la 20k.
+- **También las carpetas locales** `runs/panel-l8`, `runs/ciego-epocas-l32`,
+  `runs/ciego-epocas-l32-10k/intento-cota-s2` y `runs/ciego-epocas-l32-20k`. Los números quedan
+  en esta bitácora.

@@ -466,6 +466,7 @@ def test_micro_lote_auto_deja_la_menor_cantidad_de_trozos():
     (["--fraccion-limpias", "1"], "--fraccion-limpias 1: tiene que estar en [0, 1)"),
     (["--qsm-target-std", "0"], "--qsm-target-std 0.0: tiene que ser positivo y finito"),
     (["--qsm-target-std", "nan"], "--qsm-target-std nan: tiene que ser positivo y finito"),
+    (["--qsm-target-std", "0.06", "0.06"], "--qsm-target-std [0.06, 0.06]: hay targets repetidos"),
     (["--val-snr", "25", "0"], "cada SNR tiene que ser positivo y finito"),
     (["--micro-lote", "ocho"], "un entero o `auto`"),
     (["--patch", "96", "--vram-gb", "2"], "ni un parche de 96^3 entra en 2.00 GiB"),
@@ -1034,9 +1035,15 @@ MINIMOS = [5.0, 4.0, 4.5, 4.6, math.nan, 4.0]
 NRMSE = [6.0, 90.0, 3.0, 4.7, math.nan, 4.1]
 MOTIVOS = ["corte", "max_iter", "corte", "corte", "no_finito", "corte"]
 MEJOR_QSM = 2
-CLAVES_BEST_QSM = {"config", "model", "iteration", "psnr", "nrmse_min_pct", "iter_min",
-                   "nrmse_final_pct", "iteraciones", "motivo", "estabilidad"}
+CLAVES_BEST_QSM = {"config", "model", "iteration", "psnr", "target_std", "nrmse_min_pct",
+                   "iter_min", "nrmse_final_pct", "iteraciones", "motivo", "estabilidad"}
 BUSCA_BEST_QSM = "best_qsm.pth: el de menor NRMSE QSM mínimo del ADMM, el de su mejor iteración"
+
+
+# Dos targets (0.06 y 0.25), dos evaluaciones (la 3 y la 6), un ADMM por target: en la 3 gana
+# 0.25 (4.0 contra 5.0) y en la 6 gana 0.06 (3.0, el menor de todos).
+DOS_MINIMOS = [5.0, 4.0, 3.0, 6.0]
+DOS_FINALES = [6.0, 5.0, 4.0, 7.0]
 
 
 def forzada(pasos, nrmse, minimos=None, motivos=None):
@@ -1138,6 +1145,10 @@ def con_qsm(tmp_path_factory):
                                            motivos=["no_finito"] * 2)),
         "qsm-sin-estabilidad": lanza(base, raiz / "qsm-sin-estabilidad", *QSM, "--qsm-datos",
                                      str(cosmos), "--estabilidad-lado", "0"),
+        "dos-targets": lanza(base, raiz / "dos-targets", *QSM, "--qsm-datos", str(cosmos),
+                             "--qsm-target-std", "0.06", "0.25", *con_wandb,
+                             codigo=forzada([1.0, 1.0], DOS_FINALES, minimos=DOS_MINIMOS),
+                             entorno=w),
     }
     # Validación cada 2 y QSM cada 4: en la 4 y en la última, no en la 2.
     con_w = [*QSM, "--eval-every", "2", "--seguimiento", "offline"]
@@ -1364,12 +1375,50 @@ def test_sin_un_nrmse_finito_no_hay_best_qsm(con_qsm):
         "estabilidad"] is None
 
 
+def test_con_varios_targets_cuenta_el_de_menor_nrmse_minimo(con_qsm):
+    """Con --qsm-target-std 0.06 0.25 el ADMM corre a los dos en cada evaluación: la fila de
+    `qsm.jsonl` lleva arriba el de menor NRMSE mínimo y los dos en `por_target`, `best_qsm.pth` es
+    el menor de todos con su target, el log dice cuál ganó y, offline, W&B lleva `qsm/*` del mejor
+    con `qsm/mejor_target` y `qsm_t006/*`, `qsm_t025/*` de cada uno."""
+    raiz, (salida, _) = con_qsm["raiz"], con_qsm["salidas"]["dos-targets"]
+    carpeta = raiz / "dos-targets"
+    filas = qsm_jsonl(carpeta)
+    assert [f["target_std"] for f in filas] == [0.25, 0.06]
+    assert [f["nrmse_min_pct"] for f in filas] == [4.0, 3.0]
+    assert [f["nrmse_final_pct"] for f in filas] == [5.0, 4.0]
+    for f, (a, b) in zip(filas, [(5.0, 4.0), (3.0, 6.0)]):
+        assert set(f["por_target"]) == {"0.06", "0.25"}
+        assert (f["por_target"]["0.06"]["nrmse_min_pct"],
+                f["por_target"]["0.25"]["nrmse_min_pct"]) == (a, b)
+    best = torch.load(carpeta / "best_qsm.pth", map_location="cpu", weights_only=False)
+    assert (best["iteration"], best["target_std"], best["nrmse_min_pct"]) == (QSM_N, 0.06, 3.0)
+    hecho = json.loads((carpeta / "estado.json").read_text())
+    assert hecho["best_qsm"] == best_qsm_esperado(carpeta) and hecho["best_qsm"]["target_std"] == 0.06
+    assert "con target_std 0.06, 0.25" in salida
+    assert salida.count("    qsm 0.06 NRMSE=") == salida.count("    qsm 0.25 NRMSE=") == 2
+    assert "    qsm: mejor target 0.25 (4.00 %)" in salida
+    assert "    qsm: mejor target 0.06 (3.00 %)" in salida
+    assert "target 0.06), el menor hasta ahora" in salida
+    if HAY_WANDB:
+        from test_seguimiento import historia
+        rid = json.loads((carpeta / "seguimiento.json").read_text())["id"]
+        h = historia(carpeta, rid)
+        assert (h[QSM_EVALUA]["qsm/mejor_target"], h[QSM_N]["qsm/mejor_target"]) == (0.25, 0.06)
+        assert (h[QSM_EVALUA]["qsm/nrmse_min_pct"], h[QSM_N]["qsm/nrmse_min_pct"]) == (4.0, 3.0)
+        assert (h[QSM_EVALUA]["qsm_t006/nrmse_min_pct"], h[QSM_EVALUA]["qsm_t025/nrmse_min_pct"]) == (
+            5.0, 4.0)
+        assert (h[QSM_N]["qsm_t006/nrmse_min_pct"], h[QSM_N]["qsm_t025/nrmse_min_pct"]) == (3.0, 6.0)
+        for paso in (QSM_EVALUA, QSM_N):
+            assert {"qsm/update_final", "qsm_t006/update_final", "qsm_t025/update_final",
+                    "qsm_t006/fallo", "qsm_t025/fallo"} <= set(h[paso]), paso
+
+
 def test_best_qsm_sale_de_qsm_jsonl(con_qsm):
     """En toda corrida de esta sección, `best_qsm` de `estado.json` es el que se deduce de
     `qsm.jsonl`, y `best_qsm.pth` existe sólo si hay uno, con su iteración: también con la
     estabilidad que da de verdad el modelo de test, al reanudar y en las ramas."""
     carpetas = sorted(c for c in con_qsm["raiz"].iterdir() if (c / "estado.json").exists())
-    assert len(carpetas) == (17 if HAY_WANDB else 13)
+    assert len(carpetas) == (18 if HAY_WANDB else 14)
     for carpeta in carpetas:
         esperado = best_qsm_esperado(carpeta)
         assert json.loads((carpeta / "estado.json").read_text())["best_qsm"] == esperado, carpeta
@@ -1814,8 +1863,8 @@ def test_qsm_target_std_llega_al_admm_y_al_punto_de_estabilidad(monkeypatch):
     eval_set = [(torch.zeros(1, 8, 8, 8), "v")]
     train3d.arma_puntos_de_estabilidad(args, eval_set, {"mascara": np.ones((8, 8, 8), bool)},
                                        torch.device("cpu"))
-    assert visto[-1] == args.qsm_target_std == 0.25
-    assert train3d.opciones().get_default("qsm_target_std") == qsm3d.TARGET_STD == 0.06
+    assert visto[-1] == args.qsm_target_std[0] == 0.25
+    assert train3d.opciones().get_default("qsm_target_std") == [qsm3d.TARGET_STD] == [0.06]
     assert "qsm_target_std" in train3d.LIBRES
 
 

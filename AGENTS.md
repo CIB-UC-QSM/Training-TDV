@@ -25,6 +25,13 @@ conserva: lo que de ella sigue valiendo está resumido en esos documentos.
 
 ## Mecánica de la sesión
 
+- **Una sola sesión; subagentes y workflows, sólo si hacen falta.** Se lanzan cuando se cumplen
+  las tres: hay dos o más tareas que no dependen una de otra (o una conclusión que conviene
+  refutar con otra mirada antes de escribirla); cada una va acotada (qué leer, qué devolver con
+  schema, cuándo termina); y paralelizar ahorra tiempo real o da cobertura que una sesión no da.
+  No sirven para corridas ni barridos de GPU, búsquedas puntuales ni decisiones en cadena.
+  Antes de lanzar, una línea al autor con qué se paraleliza y cuántos agentes (tope 10);
+  `pipeline()` por defecto y esfuerzo bajo en las etapas mecánicas.
 - **Python de más de ~20 líneas va a un archivo**, no pegado en un comando. Una medición nueva deja
   su script en `scripts/` y su número, con el script y la fecha, en una entrada de la bitácora.
 - **Una corrida la lanza el autor, o el agente si el autor lo pide en ese turno**, mirando antes
@@ -207,6 +214,9 @@ Medido en 2D (BSDS400 color, σ = 25) salvo aviso; en 3D vale como supuesto.
   `T` ni `λ`; la evaluación 3D de `ddr/qsm3d.py` hace lo mismo, con α fijado para que la primera
   reconstrucción tenga desviación 0.06 en el cerebro (4.86 en COSMOS; `--qsm-target-std`).
 - **La red no es escala-equivariante** (15–28 %): la amplitud de χ que ve la red importa.
+- **α se elige por checkpoint:** con el target fijo en 0.25, el QSM de la ciega parecía empeorar
+  al entrenar; con el mejor de {0.02, 0.06, 0.25} mejora, y el mejor depende del sujeto (0.02 en
+  COSMOS, 0.06 en Sim2). Se evalúa con varios `--qsm-target-std` y cuenta el de menor NRMSE.
 - **En 3D, α mueve el ADMM:** con la control y con `prep3d-g10-s2-2500`, en COSMOS y en Sim2,
   target_std 0.06 fue el peor de {0.02, 0.06, 0.25, 0.35}, 2.6–7.7 pp de NRMSE sobre 0.25 (HFEN,
   igual). El mejor depende del dato: 0.35 en COSMOS y en Sim2 con el campo rehecho (E1), 0.02 en
@@ -247,6 +257,9 @@ Probado y cerrado en las fases anteriores; no se reabre sin un mecanismo nuevo.
   percentiles: da casi el mismo α en COSMOS y Sim2), α según el error del dato (α_MAP cae en la
   joroba de los peores) ni las fuentes fuertes de Sim2 como causa de su α bajo: es la forma de
   su desajuste (bitácora, «E0» y E1).
+- **Para la convergencia del ADMM en 3D:** pasar a mitad de camino de un target bajo (denoiser
+  fuerte) a uno alto: el ADMM se va a la solución del target alto y el update sube a 6–8 %
+  (bitácora, «ADMM en dos rondas»).
 
 ## Mejoras candidatas
 

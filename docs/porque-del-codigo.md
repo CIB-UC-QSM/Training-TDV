@@ -663,9 +663,15 @@ suya, el NRMSE contra `chi_cosmos` en su máscara, medido sobre M·χ.
   QSM.
 - **`--qsm-target-std`, 0.06 por defecto:** es el `TARGET_STD` que el autor calibró para su red 2D
   color; queda como default para no mover las corridas anteriores. En la etapa 2, con dos redes 3D
-  y dos sujetos, 0.06 fue el peor de {0.02, 0.06, 0.25, 0.35}, y la propuesta es 0.25 (bitácora,
-  «Etapa 2» y «Abierto»). Va también al punto de la estabilidad en QSM, que es la entrada del
+  y dos sujetos, 0.06 fue el peor de {0.02, 0.06, 0.25, 0.35}; las corridas largas evalúan a
+  varios targets (abajo; bitácora, «Etapa 2» y «Abierto»). Va también al punto de la estabilidad en QSM, que es la entrada del
   primer denoiser del ADMM y depende de α.
+- **Varios `--qsm-target-std` (2026-10-24):** el ADMM corre a cada uno, y la fila de `qsm.jsonl`,
+  `best_qsm.pth`, la meseta y `qsm/*` usan el de menor NRMSE mínimo, con `qsm/mejor_target`. Cada
+  uno queda en `por_target` y en `qsm_t<target>/*` (0.25 → `qsm_t025`); lo mismo en Sim2, que
+  elige el suyo. El punto de la estabilidad usa el primero. Existe porque con el target fijo en
+  0.25 el QSM parecía empeorar al entrenar, y con el mejor de cada checkpoint mejora (bitácora,
+  «RESULTADO del barrido 0.02 / 0.06 / 0.12»). Cuesta un ADMM más por target y sujeto.
 - **Abierto:** una parada sin referencia para la red 3D está sin calibrar; se calibra con un grid
   después del entrenamiento (bitácora, «Abierto»).
 

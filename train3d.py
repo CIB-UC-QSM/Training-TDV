@@ -143,8 +143,8 @@ QSM_SIM2 = "datasets/qsm_sim2"
 # de la validación, es SNR 10.2 (AGENTS.md, «Entrenamiento 3D»).
 # Lo de `best_qsm.pth` que va a `estado.json`: la iteración, lo que lo eligió (el NRMSE mínimo del
 # ADMM) y lo que se registra de diagnóstico.
-RESUMEN_BEST_QSM = ("iteration", "nrmse_min_pct", "nrmse_final_pct", "iteraciones", "motivo",
-                    "estabilidad")
+RESUMEN_BEST_QSM = ("iteration", "target_std", "nrmse_min_pct", "nrmse_final_pct",
+                    "iteraciones", "motivo", "estabilidad")
 
 # --- ESTABILIDAD -----------------------------------------------------------------------------
 # El número del paso explícito, (T/S)·λ_max(∇²R), de `ddr/qsm3d.estabilidad`. La semilla es la de
@@ -475,6 +475,80 @@ def evalua_qsm(model, cosmos: dict, device, amp, max_iter: int,
     return {"fallo": fallo}
 
 
+def evalua_targets(piezas, datos: dict) -> tuple[dict, float]:
+    """`evalua_qsm` a cada --qsm-target-std: {target: (resultado, métricas)} y el target de menor
+    NRMSE mínimo (el primero si empatan o si fallan todos)."""
+    args = piezas.args
+    res = {}
+    for ts in args.qsm_target_std:
+        r = evalua_qsm(piezas.model, datos, piezas.device, piezas.mode["amp"],
+                       args.qsm_max_iter, ts)
+        res[ts] = (r, metricas_qsm(r, datos) if "fallo" not in r else {})
+    buenos = [ts for ts, (r, _) in res.items()
+              if "fallo" not in r and math.isfinite(r["nrmse_min_pct"])]
+    return res, min(buenos, key=lambda ts: res[ts][0]["nrmse_min_pct"],
+                    default=args.qsm_target_std[0])
+
+
+def clave_target(base: str, ts: float) -> str:
+    """El prefijo de W&B de un target: `qsm_t025` para 0.25."""
+    return f"{base}_t" + f"{ts:g}".replace(".", "")
+
+
+def fila_y_registro(res: dict, mejor: float, base: str) -> tuple[dict, dict]:
+    """La fila del jsonl, con el resultado del mejor target arriba y, con varios, cada uno en
+    `por_target`; y lo que va a W&B: `<base>/*` del mejor (con `<base>/mejor_target`) y, con
+    varios, `<base>_t<target>/*` de cada uno. Un target que falló sólo deja su `fallo`."""
+    def sin_volumenes(r: dict) -> dict:
+        return {k: v for k, v in r.items() if k not in ("chi", "chi0")}
+
+    r, met = res[mejor]
+    fila = {"target_std": mejor, **sin_volumenes(r), **met}
+    if len(res) > 1:
+        fila["por_target"] = {f"{ts:g}": {**sin_volumenes(rt), **mt}
+                              for ts, (rt, mt) in res.items()}
+    registro = {}
+    prefijos = [(base, res[mejor])] + ([(clave_target(base, ts), v) for ts, v in res.items()]
+                                       if len(res) > 1 else [])
+    for prefijo, (rt, mt) in prefijos:
+        if "fallo" in rt:
+            registro[f"{prefijo}/fallo"] = 1
+            continue
+        registro |= {f"{prefijo}/fallo": 0,
+                     **{f"{prefijo}/{k}": rt[k] for k in ("nrmse_final_pct", "nrmse_min_pct",
+                                                          "iter_min", "iteraciones", "alpha",
+                                                          "segundos")},
+                     f"{prefijo}/update_final": rt["update_trayectoria"][-1],
+                     **{f"{prefijo}/{k}": v for k, v in mt.items()}}
+    if "fallo" not in r:
+        registro[f"{base}/mejor_target"] = mejor
+    return fila, registro
+
+
+def imprime_targets(nombre: str, res: dict, mejor: float, detalle: bool) -> None:
+    """Una línea por target (con el target delante si hay varios; `detalle` suma iteraciones y
+    motivo) y, con varios, cuál ganó."""
+    varios = len(res) > 1
+    for ts, (r, met) in res.items():
+        quien = f"{nombre} {ts:g}" if varios else nombre
+        if "fallo" in r:
+            print(f"    {quien} FALLÓ ({r['fallo']}); el entrenamiento sigue", flush=True)
+        elif detalle:
+            print(f"    {quien} NRMSE={r['nrmse_final_pct']:.2f} % (mínimo "
+                  f"{r['nrmse_min_pct']:.2f} % en la iteración {r['iter_min']} del ADMM)"
+                  f" | {r['iteraciones']} iteraciones, motivo {r['motivo']} | "
+                  f"alpha={r['alpha']:.4f} | {r['segundos']:.1f} s" + linea_metricas(met),
+                  flush=True)
+        else:
+            print(f"    {quien} NRMSE={r['nrmse_final_pct']:.2f} % (mínimo "
+                  f"{r['nrmse_min_pct']:.2f} % en la iteración {r['iter_min']}) | "
+                  f"alpha={r['alpha']:.4f} | {r['segundos']:.1f} s" + linea_metricas(met),
+                  flush=True)
+    if varios and "fallo" not in res[mejor][0]:
+        print(f"    {nombre}: mejor target {mejor:g} "
+              f"({res[mejor][0]['nrmse_min_pct']:.2f} %)", flush=True)
+
+
 def resumen_qsm(registros: list[dict]) -> dict:
     """Lo de la evaluación QSM que va a `estado.json` y al resumen de W&B: la última que terminó,
     la de menor NRMSE final y cuántas fallaron. None donde no hubo ninguna."""
@@ -755,10 +829,11 @@ def opciones() -> argparse.ArgumentParser:
                    help="techo de iteraciones del ADMM, que para antes si el NRMSE sube dos "
                         "iteraciones seguidas; sin el corte por umbral del autor (su script llega "
                         "hasta 100 con TOL/CORTE)")
-    p.add_argument("--qsm-target-std", type=float, default=TARGET_STD,
+    p.add_argument("--qsm-target-std", type=float, nargs="+", default=[TARGET_STD],
                    help="desviación de α·χ₀ en la máscara con que la evaluación QSM escala la "
-                        "entrada de la red (y el punto de la estabilidad en QSM); 0.06 por "
-                        "defecto, el del oficial 2D")
+                        "entrada de la red; con varios, el ADMM corre a cada uno y cuenta el "
+                        "de menor NRMSE mínimo (el primero fija el punto de la estabilidad en "
+                        "QSM); 0.06 por defecto, el del oficial 2D")
     p.add_argument("--estabilidad-lado", type=int, default=LADO_ESTABILIDAD,
                    help="lado del cubo donde se mide (T/S)·λ_max(∇²R), con la cadencia de la "
                         "evaluación QSM: en la validación y, con COSMOS, en la entrada del primer "
@@ -851,8 +926,11 @@ def revisa_banderas(parser: argparse.ArgumentParser, args: argparse.Namespace) -
         parser.error(f"--qsm-max-iter {args.qsm_max_iter}: tiene que ser al menos 1")
     if any(not (math.isfinite(s) and s > 0) for s in args.val_snr):
         parser.error(f"--val-snr {args.val_snr}: cada SNR tiene que ser positivo y finito")
-    if not (math.isfinite(args.qsm_target_std) and args.qsm_target_std > 0):
-        parser.error(f"--qsm-target-std {args.qsm_target_std}: tiene que ser positivo y finito")
+    for ts in args.qsm_target_std:
+        if not (math.isfinite(ts) and ts > 0):
+            parser.error(f"--qsm-target-std {ts}: tiene que ser positivo y finito")
+    if len(set(args.qsm_target_std)) < len(args.qsm_target_std):
+        parser.error(f"--qsm-target-std {args.qsm_target_std}: hay targets repetidos")
     if args.meseta and not (args.qsm_datos and all((Path(args.qsm_datos) / a).is_file()
                                                    for a in QSM_ARCHIVOS)):
         parser.error(f"--meseta {args.meseta} decide con el NRMSE QSM, y la evaluación QSM no "
@@ -1089,7 +1167,7 @@ def arma_puntos_de_estabilidad(args: argparse.Namespace, eval_set, cosmos: dict 
             try:
                 punto_qsm = torch.from_numpy(punto_qsm3d(
                     cosmos, min(args.estabilidad_lado, *cosmos["mascara"].shape), device=device,
-                    target_std=args.qsm_target_std))
+                    target_std=args.qsm_target_std[0]))
             except Exception as e:
                 print(f"AVISO: estabilidad en QSM apagada: el punto no se pudo armar "
                       f"({type(e).__name__}: {e}); el entrenamiento sigue", flush=True)
@@ -1151,7 +1229,7 @@ def imprime_arranque(piezas, corrida) -> None:
           + " | QSM " + (f"{qsm_cuando}, COSMOS "
                          f"{'x'.join(map(str, piezas.cosmos['chi'].shape))} de "
                          f"{args.qsm_datos}, hasta {args.qsm_max_iter} iteraciones de ADMM "
-                         f"con target_std {args.qsm_target_std:g}"
+                         f"con target_std {', '.join(map('{:g}'.format, args.qsm_target_std))}"
                          if piezas.cosmos is not None else "apagada")
           + " | estabilidad " + ("apagada (--estabilidad-lado 0)" if piezas.punto_val is None else
                                  f"con la cadencia de QSM, en {piezas.punto_val.shape[-1]}^3 de "
@@ -1432,31 +1510,24 @@ def valida_niveles(piezas, corrida, it: int, entrada: dict) -> None:
 
 
 def valida_sim2(piezas, corrida, it: int) -> None:
-    """La evaluación QSM en Sim2: el mismo ADMM que en COSMOS, a `qsm_sim2.jsonl` y a W&B
-    (qsm_sim2/*, con su lámina). No elige checkpoints ni toca la meseta."""
-    args = piezas.args
-    r = evalua_qsm(piezas.model, piezas.sim2, piezas.device, piezas.mode["amp"],
-                   args.qsm_max_iter, args.qsm_target_std)
-    met = metricas_qsm(r, piezas.sim2) if "fallo" not in r else {}
-    fila = {"iteration": it, "efectiva": it - corrida.descartadas,
-            "target_std": args.qsm_target_std,
-            **{k: v for k, v in r.items() if k not in ("chi", "chi0")}, **met}
-    anota_jsonl(piezas.out / "qsm_sim2.jsonl", fila)
+    """La evaluación QSM en Sim2: el mismo ADMM que en COSMOS, a cada --qsm-target-std, a
+    `qsm_sim2.jsonl` y a W&B (`qsm_sim2/*` del mejor target, `qsm_sim2_t<target>/*` de cada uno
+    con varios, y la lámina del mejor). No elige checkpoints ni toca la meseta."""
+    res, mejor = evalua_targets(piezas, piezas.sim2)
+    r = res[mejor][0]
+    fila, registro = fila_y_registro(res, mejor, "qsm_sim2")
+    anota_jsonl(piezas.out / "qsm_sim2.jsonl",
+                {"iteration": it, "efectiva": it - corrida.descartadas, **fila})
+    imprime_targets("qsm Sim2", res, mejor, detalle=False)
+    seguimiento.registra(piezas.run, registro, it)
     if "fallo" in r:
-        print(f"    qsm Sim2 FALLÓ ({r['fallo']}); el entrenamiento sigue", flush=True)
-        seguimiento.registra(piezas.run, {"qsm_sim2/fallo": 1}, it)
         return
-    print(f"    qsm Sim2 NRMSE={r['nrmse_final_pct']:.2f} % (mínimo {r['nrmse_min_pct']:.2f} % en "
-          f"la iteración {r['iter_min']}) | alpha={r['alpha']:.4f} | {r['segundos']:.1f} s"
-          + linea_metricas(met), flush=True)
-    seguimiento.registra(piezas.run, {"qsm_sim2/fallo": 0, **{
-        f"qsm_sim2/{k}": r[k] for k in ("nrmse_final_pct", "nrmse_min_pct", "iter_min",
-                                        "iteraciones", "alpha", "segundos")},
-        **{f"qsm_sim2/{k}": v for k, v in met.items()}}, it)
+    rotulo = f" (target {mejor:g})" if len(res) > 1 else ""
     registra_lamina(piezas.run, "qsm_sim2/reconstruccion",
                     lambda: lamina_qsm(r["chi"], piezas.sim2["chi"], piezas.sim2["mascara_eval"],
                                        orientacion=ORIENTACION_T1, chi0=r["chi0"]),
-                    it, "Sim2: GT | χ₀ sin red | reconstrucción | error, en la máscara, ±0.1 ppm")
+                    it, f"Sim2{rotulo}: GT | χ₀ sin red | reconstrucción | error, en la máscara, "
+                        "±0.1 ppm")
 
 
 def valida_estabilidad(piezas, corrida, it: int, entrada: dict) -> None:
@@ -1503,17 +1574,16 @@ def aplica_meseta(piezas, corrida, it: int, nrmse: float, psnr: float) -> None:
 def valida_qsm(piezas, corrida, it: int, psnr: float,
                psnr_criterio: float) -> None:
     """Una evaluación QSM: la estabilidad en la entrada del ADMM, el ADMM con la red como denoiser
-    sobre COSMOS, una fila en `qsm.jsonl`, `best_qsm.pth` si su NRMSE mínimo es el menor visto, la
-    lámina en W&B y, con --meseta, la decisión sobre el lr."""
+    sobre COSMOS a cada --qsm-target-std, una fila en `qsm.jsonl` (la del target de menor NRMSE
+    mínimo, con cada uno en `por_target` si hay varios), `best_qsm.pth` si ese NRMSE es el menor
+    visto, la lámina en W&B y, con --meseta, la decisión sobre el lr."""
     args = piezas.args
     est = (mide_estabilidad(piezas.model, piezas.punto_qsm, piezas.device)
            if piezas.punto_qsm is not None else None)
-    r = evalua_qsm(piezas.model, piezas.cosmos, piezas.device, piezas.mode["amp"],
-                   args.qsm_max_iter, args.qsm_target_std)
-    met = metricas_qsm(r, piezas.cosmos) if "fallo" not in r else {}
-    fila = {"iteration": it, "efectiva": it - corrida.descartadas,
-            "target_std": args.qsm_target_std,
-            **{k: v for k, v in r.items() if k not in ("chi", "chi0")}, **met,
+    res, mejor = evalua_targets(piezas, piezas.cosmos)
+    r = res[mejor][0]
+    fila_t, registro = fila_y_registro(res, mejor, "qsm")
+    fila = {"iteration": it, "efectiva": it - corrida.descartadas, **fila_t,
             **(claves_estabilidad(est) if est is not None else {})}
     corrida.qsm_hist.append(fila)
     anota_jsonl(piezas.out / "qsm.jsonl", fila)
@@ -1522,41 +1592,37 @@ def valida_qsm(piezas, corrida, it: int, psnr: float,
         if "fallo" not in est:
             seguimiento.registra(piezas.run, {"qsm/estabilidad": est["paso"],
                                               "qsm/lambda_max": est["lambda_max"]}, it)
+    imprime_targets("qsm", res, mejor, detalle=True)
+    seguimiento.registra(piezas.run, registro, it)
     if "fallo" in r:
-        print(f"    qsm FALLÓ ({r['fallo']}); el entrenamiento sigue", flush=True)
-        seguimiento.registra(piezas.run, {"qsm/fallo": 1}, it)
         return
-    print(f"    qsm NRMSE={r['nrmse_final_pct']:.2f} % (mínimo "
-          f"{r['nrmse_min_pct']:.2f} % en la iteración {r['iter_min']} del ADMM)"
-          f" | {r['iteraciones']} iteraciones, motivo {r['motivo']} | "
-          f"alpha={r['alpha']:.4f} | {r['segundos']:.1f} s" + linea_metricas(met), flush=True)
     if r["iter_min"] == 0:
         alerta(piezas, "el ADMM devuelve χ0", f"en la it {it}, el mínimo del ADMM en COSMOS "
                f"({r['nrmse_min_pct']:.2f} %) es su iteración 0: la red no mejora la "
                "reconstrucción sin red")
-    # `best_qsm.pth`: la evaluación de menor NRMSE mínimo del ADMM, lo mismo que mira la meseta.
-    # El final, el motivo y la estabilidad viajan con él, pero no eligen.
+    # `best_qsm.pth`: la evaluación de menor NRMSE mínimo del ADMM entre los targets, lo mismo
+    # que mira la meseta. El final, el motivo, el target y la estabilidad viajan con él, pero no
+    # eligen.
     if r["nrmse_min_pct"] < (corrida.mejor_qsm["nrmse_min_pct"] if corrida.mejor_qsm
                              else math.inf):
         # Una copia, como `mejor`: el estado la lleva para reponer el archivo.
         corrida.mejor_qsm = copy.deepcopy({
             "config": piezas.config, "model": piezas.model.state_dict(), "iteration": it,
-            "psnr": psnr, **{k: r[k] for k in ("nrmse_min_pct", "iter_min", "nrmse_final_pct",
-                                               "iteraciones", "motivo")},
+            "psnr": psnr, "target_std": mejor,
+            **{k: r[k] for k in ("nrmse_min_pct", "iter_min", "nrmse_final_pct",
+                                 "iteraciones", "motivo")},
             "estabilidad": (est["paso"] if est is not None and "fallo" not in est else None)})
         guarda_pth(corrida.mejor_qsm, piezas.out / "best_qsm.pth")
         print(f"    best_qsm.pth: NRMSE QSM mínimo {r['nrmse_min_pct']:.2f} % "
-              f"(final {r['nrmse_final_pct']:.2f} %, motivo {r['motivo']}), el "
-              "menor hasta ahora", flush=True)
-    seguimiento.registra(piezas.run, {"qsm/fallo": 0, **{
-        f"qsm/{k}": r[k] for k in ("nrmse_final_pct", "nrmse_min_pct", "iter_min",
-                                   "iteraciones", "alpha", "segundos")},
-        **{f"qsm/{k}": v for k, v in met.items()}}, it)
+              f"(final {r['nrmse_final_pct']:.2f} %, motivo {r['motivo']}"
+              + (f", target {mejor:g}" if len(res) > 1 else "") + "), el menor hasta ahora",
+              flush=True)
+    rotulo = f" (target {mejor:g})" if len(res) > 1 else ""
     registra_lamina(piezas.run, "qsm/reconstruccion",
                     lambda: lamina_qsm(r["chi"], piezas.cosmos["chi"],
                                        piezas.cosmos["mascara_eval"], chi0=r["chi0"]),
-                    it, "COSMOS: GT | χ₀ sin red | reconstrucción | error, en la máscara, "
-                        "±0.1 ppm")
+                    it, f"COSMOS{rotulo}: GT | χ₀ sin red | reconstrucción | error, en la "
+                        "máscara, ±0.1 ppm")
     # La meseta mira las evaluaciones sin fallo desde --meseta-desde, y nunca la última: con la
     # corrida terminando, ya no hay lr que partir.
     if args.meseta and args.meseta_desde <= it < args.iterations:
