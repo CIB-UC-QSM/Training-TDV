@@ -11,7 +11,8 @@ se decidió. El porqué de cada constante del código está en
 
 **SNR = pico/σ, con el pico = 1** (el percentil 99.5 de cada T1) desde el 2026-10-23. Lo anterior
 usa la media del cerebro, 0.316/σ: SNR_pico = SNR_media/0.316 (3.2 → 10.2, 25 → 79, 50 → 158,
-100 → 316).
+100 → 316). Las figuras del 21 y 22-10 en `docs/Sanity Check/` usan la vieja: su «SNR 25»
+tiene 3.16 veces menos ruido que un SNR 25 por el máximo («Auditoría del ruido…», 26-10).
 
 ---
 
@@ -27,8 +28,10 @@ usa la media del cerebro, 0.316/σ: SNR_pico = SNR_media/0.316 (3.2 → 10.2, 25
   «Llevar el entrenamiento 3D a otra máquina». Lo fijado y por qué: «La corrida larga», abajo.
 - **Lo más largo en 3D:** `ciego-epocas-l32-10k`, 10 000 iteraciones en la 5070 Ti local
   (terminada el 24-10; W&B `kxein1yw`, consolidada): ruido ciego log-uniforme, σ ∈ [0.81, 55]/255
-  por parche, épocas, lote 32 y `--mascara-cerebro`. **En vuelo:** su rama a 20 000,
-  `ciego-epocas-l32-20k`, con lr constante (desde el 25-10 a las 18:07; W&B `4027tbsv`). Lo que
+  por parche, épocas, lote 32 y `--mascara-cerebro`. Su rama a 20 000,
+  `ciego-epocas-l32-20k` (lr constante, W&B `4027tbsv`), se cortó a mano en la 15 875 por meseta;
+  **en vuelo**, su rama a 30 000 desde la 14 880, `ciego-epocas-l32-30k`, con lr/2 y meseta
+  (desde el 26-10 a las 11:19; W&B `ata3j1cj`; «La rama a 30 000»). Lo que
   dejaron las sondas cortas: «Lo que mostraron las sondas» y «El disyuntor en 3D».
 - **Para QSM se usa `best_qsm.pth`**, no `best.pth`. En `../QSM-TDV` no carga tal cual: lo
   convierte `a_qsm_tdv.py`, inexacto junto al borde, y falta la escala de χ («Hacia QSM-TDV»).
@@ -36,6 +39,10 @@ usa la media del cerebro, 0.316/σ: SNR_pico = SNR_media/0.316 (3.2 → 10.2, 25
   checkpoint de la 10 000 le gana a todos los targets de 0.02 a 0.06 (3.7–7.2 pp en COSMOS;
   «Grid de target…», 25-10), así que ese archivo no sirve. El de la rama a 20 000 ya se elige al
   mejor target.
+- **Los dos sujetos QSM son simulados.** La fase de COSMOS es D∗χ_COSMOS, con el mismo kernel
+  del ADMM, más ruido complejo de SNR 100 por el máximo: un crimen inverso, optimista frente a
+  una fase adquirida. Sim2 es del challenge 2.0 y trae desajuste de modelo («Auditoría del
+  ruido y de los datos QSM», 26-10).
 - **La fase 2D está cerrada**: `t8delta-100k-s1` llegó a 31.547 dB en CBSD68 (σ = 25) contra
   31.53 publicado. Lo que dejó para el 3D: «Lo que dejó el 2D», al final.
 
@@ -49,8 +56,8 @@ usa la media del cerebro, 0.316/σ: SNR_pico = SNR_media/0.316 (3.2 → 10.2, 25
   rebobinó en 10 000 iteraciones (la 9 768), sin `TRABADA`.
 - **Después de la 10 000:** en la 10 000 de `ciego-epocas-l32-10k`, PSNR en el cerebro 33.787 dB,
   el mejor de la corrida; el QSM al mejor target, casi plano desde la 8 432 (varía ≤ 0.3 pp;
-  COSMOS a 0.02, 26.73 %; Sim2 a 0.06, 35.49 %). Hasta la 20 000 lo mide la rama, con lr
-  constante: leerla contra su pre-registro («La rama a 20 000»). Sin medir: cuánto se
+  COSMOS a 0.02, 26.73 %; Sim2 a 0.06, 35.49 %). La rama con lr constante llegó a la 15 875
+  (RESULTADO en «La rama a 20 000»); la rama a 30 000 sigue con lr/2 y meseta. Sin medir: cuánto se
   correlacionan los ruidos del PSNR y del NRMSE, y si hay pozos del NRMSE más largos que la
   paciencia.
 - **Si partir el lr mejora el NRMSE QSM:** ninguna serie QSM cruzó una mitad.
@@ -76,6 +83,10 @@ usa la media del cerebro, 0.316/σ: SNR_pico = SNR_media/0.316 (3.2 → 10.2, 25
 - **Una falla en la validación de denoising corta la corrida:** `valida` llama a
   `valida_denoising` sin `try`, a diferencia de la estabilidad y el ADMM (auditoría, 2026-10-16;
   verificado el 2026-10-20).
+- **Un sujeto con fase adquirida:** COSMOS es un crimen inverso y Sim2 una simulación, así que
+  ningún NRMSE de la evaluación dice cómo le va a la red in vivo. Falta una fase adquirida con
+  referencia (por ejemplo, la del challenge 2016, con COSMOS o χ33) («Auditoría del ruido…»,
+  26-10).
 - **α sin GT:** la evaluación elige el target con la GT (α oráculo). No sirven una target_std
   robusta («La distribución de χ₀»), α por el ruido estimado de χ₀ (MAD de wavelets) ni el
   principio de discrepancia («¿α sin GT?»). Propuesta, sin correr: aumento de amplitud en el
@@ -606,7 +617,8 @@ son sólo rótulos de dónde salió un número.
 | `etapa2-ciega` | la rama ciega de la etapa 2, σ ~ U(0, 55)/255, 1 500 iteraciones |
 | `ciego-log-l32` | ciega log-uniforme, σ ∈ [0.81, 55]/255, sin épocas ni disyuntor, 2 250 iteraciones |
 | `ciego-epocas-l32-10k` | ciega log-uniforme con épocas y lote 32, terminada en 10 000 (W&B `kxein1yw`) |
-| `ciego-epocas-l32-20k` | su rama a 20 000, lr constante, en vuelo (W&B `4027tbsv`) |
+| `ciego-epocas-l32-20k` | su rama a 20 000, lr constante, cortada a mano en la 15 875 (W&B `4027tbsv`) |
+| `ciego-epocas-l32-30k` | rama de la anterior desde la 14 880, lr/2 y `--meseta 2`, en vuelo (W&B `ata3j1cj`) |
 | `prueba-disyuntor-s2` | la prueba del disyuntor 3D arreglado, 500 iteraciones |
 | `humo-panel` | la prueba de humo del panel de W&B, 4 iteraciones |
 | `denoising-snr`, `etapa2-pnp`, `snr-datos` | salidas de la etapa 1, de la etapa 2 y de «El SNR propio de los datos» |
@@ -940,7 +952,8 @@ Medianas, con mínimo y máximo entre corchetes.
   tamaño que el ruido que se suma. Lectura, no medida: la red aprendería a quitar el ruido sumado y
   a conservar esa variación, sea anatomía o ruido.
 - **χ:** RMS/σ de 5–8 en COSMOS y de 9–13 en Sim2. COSMOS, reconstruido de datos adquiridos, tiene
-  más variación fina relativa que Sim2, simulado.
+  más variación fina relativa que Sim2, simulado. (La fase de COSMOS, en cambio, es simulada:
+  «Auditoría del ruido…», 26-10.)
 
 ## 2026-10-21 — Ruido ciego log-uniforme, lote 32: `ciego-log-l32`
 
@@ -1659,7 +1672,8 @@ sin la red (`scripts/e0_desajuste.py`; los números, en `runs/etapa2-pnp/e0_desa
 | Sim2 | 0.00251 | 0.88 | 4.7 %, en el 0.1 % de los vóxeles | 3.5 (0.040) |
 
 - **La calidad del dato no separa a los sujetos:** el desajuste de Sim2 es 1.26× el de COSMOS, y
-  COSMOS correlaciona peor (0.80 contra 0.88). La predicción de la hipótesis (COSMOS con
+  COSMOS correlaciona peor (0.80 contra 0.88; en χ ≠ 0, sin el borde, 0.967: «Auditoría del
+  ruido…», 26-10). La predicción de la hipótesis (COSMOS con
   correlación ≥ 0.99) falla porque COSMOS trae ruido, no porque su modelo no cuadre (ver abajo).
 - **La forma del desajuste** (agregado tras la revisión del Agente teórico):
   - COSMOS: es el de una simulación directa con ruido. Pendiente 0.998; blanco frente al cono (el
@@ -2287,6 +2301,32 @@ W&B `zkuxpf7m` queda con un punto (borrada el 25-10, con la carpeta del intento)
 `4027tbsv`, en el grupo `ciego-epocas-l32`, enlazada a `kxein1yw` (`padre_id`). El linger quedó
 aplicado: `Linger=yes`.
 
+**RESULTADO: cortada a mano en la 15 875** (26-10, decisión del autor; `estado.json` escrito a
+mano, último estado `estado-015872.pth`). 12 evaluaciones, de la 10 416 a la 15 872, ~16.4 h en la
+GPU 1. Se lee contra el pre-registro, que era a la 20 000, como parcial:
+- **PSNR en el cerebro:** récord 34.019 dB en la 14 880, +0.23 sobre 33.79 (predicho +0.2–0.6 a la
+  20 000).
+- **QSM al mejor target:** COSMOS (0.02), mejor 25.95 % en la 12 896 (predicho 25.5–26.7), pero de
+  una evaluación a otra va de 25.95 a 27.76 %. Sim2 (0.05), mejor 35.75 % en la 14 384 (predicho
+  34–35.5: no llegó), entre 35.75 y 37.64 %.
+- **Se cumplió:** 0.15 quedó peor que los otros dos en los dos sujetos en las 12 evaluaciones, y el
+  mejor target fue siempre 0.02 en COSMOS y 0.05 en Sim2.
+- **Disyuntor:** 2 rebobinados, en la 12 429 (a la 12 371, |g| 671) y en la 14 223 (a la 14 182,
+  |g| 1.77·10³), cada uno tras 25 rechazos seguidos, y ninguna `TRABADA` (predicho ≤ 3). Los
+  rechazos pasaron de 25 a 77. La validación de la 12 400 cayó dentro de la excursión que rebobinó
+  en la 12 429: PSNR en el cerebro 32.95 dB y COSMOS 27.76 %, las peores de la rama.
+- **Pérdida de entrenamiento**, promedio cada 1 000 iteraciones desde la 10 000: 20.87, 20.58,
+  20.39, 20.17, 21.70 (con el rebobinado de la 14 223) y 19.87 (15 000–15 872). T bajó de 0.089
+  (10 025) a 0.062 (15 875).
+- **Lectura:** sigue mejorando, despacio (+0.23 dB en 4 880 iteraciones), y la oscilación entre
+  evaluaciones (~1 dB de PSNR, 1.8 pp en COSMOS) es mayor que el avance. Se corta para bajar el lr
+  («La rama a 30 000», 26-10). Ningún checkpoint posterior a la 14 880 la mejora en NRMSE con el
+  protocolo de la evaluación: la 15 376 da COSMOS 26.29 % y Sim2 36.55 %, la 15 872 27.56 % y
+  36.37 %, contra 26.11 y 36.08 %.
+- **La meseta, a posteriori:** `paso_meseta` sobre las 12 evaluaciones, con `--meseta-psnr` y la
+  rama empezando de cero, habría partido el lr en la 15 872 con paciencia 2, y ninguna vez con 3 o
+  4.
+
 ## 2026-10-25 — Grid de target 0.02–0.06, μ y ADMM en dos rondas, con la red de la 10 000
 
 **RESULTADO del grid de target** (`scripts/barrido_target_ciega.py --ckpts final`, checkpoint de
@@ -2395,3 +2435,158 @@ t = 99 (%):
   borrada y 12 ajustes de comentarios y docstrings. Sin docstrings, el AST es idéntico al de
   antes. Se aplicaron con la rama a 20 000 en vuelo y con el OK del autor: la corrida lee su copia
   en `runs/ciego-epocas-l32-20k/codigo/`, así que no la toca.
+
+## 2026-10-26 — La rama a 30 000: `ciego-epocas-l32-30k`
+
+**Antes de elegir de dónde sale, un grid de target y μ** (`scripts/grid_ckpts_26_10.py`, GPU 1,
+desde las 10:38; `runs/ciego-epocas-l32-20k/26-10-grid-target-mu.json`). Pedido del autor: si con
+target y μ ajustados ningún checkpoint posterior a la 14 880 la supera en el NRMSE de COSMOS, la
+rama sale de la 14 880. Etapa 1: la 14 880, la 15 376 y la 15 872 a target 0.01, 0.015, 0.02, 0.025
+y 0.03, con μ = 0.008. Etapa 2: al mejor target de cada una, μ = 0.006, 0.007, 0.009 y 0.01. Es el
+ADMM de la evaluación (para tras 2 subidas seguidas del NRMSE y devuelve el mínimo), con techo de
+50 en vez de 25. Sim2 no entra: el entrenamiento ya lo midió a 0.02 y 0.05 en los tres.
+
+**RESULTADO del grid** (10:38–11:18). NRMSE mínimo en COSMOS (%) y su t; con `max_iter`, el ADMM
+llegó al techo sin dos subidas seguidas:
+
+| target (μ = 0.008) | 14 880 | 15 376 | 15 872 |
+|---|---|---|---|
+| 0.01 | 27.55 (14) | 26.50 (18, max_iter) | 27.49 (14, max_iter) |
+| 0.015 | 26.17 (46, max_iter) | 26.90 (14) | 27.50 (14) |
+| 0.02 | **26.11** (18) | **26.29** (24) | 27.04 (21) |
+| 0.025 | 27.03 (12) | 26.79 (15) | **27.03** (13) |
+| 0.03 | 28.33 (9) | 27.59 (15) | 27.98 (9) |
+
+| μ, al mejor target | 14 880 (0.02) | 15 376 (0.02) | 15 872 (0.025) |
+|---|---|---|---|
+| 0.006 | 26.60 | 26.26 | 27.52 |
+| 0.007 | 26.26 | **26.15** | 27.23 |
+| 0.008 | 26.11 | 26.29 | **27.03** |
+| 0.009 | **26.09** | 26.66 | 27.04 |
+| 0.01 | 26.15 | 26.93 | 27.76 |
+
+- **Gana la 14 880:** 26.09 % ajustada, contra 26.15 de la 15 376 y 27.03 de la 15 872. La
+  diferencia con la 15 376 (0.06 pp) es menor que la oscilación entre evaluaciones, así que lo que
+  decide es la regla del autor: ninguna posterior la supera. La rama sale de la 14 880.
+- **0.02 sigue siendo el mejor target** (en la 15 872, 0.025 empata: 27.03 contra 27.04).
+- **μ no ordena nada:** el mejor μ es 0.009, 0.007 y 0.008 según el checkpoint, a ≤ 0.14 pp de
+  μ = 0.008. Queda 0.008, como en el grid de la 10 000.
+
+**PRE-REGISTRO**, escrito antes de lanzar (regla 5). Rama de `ciego-epocas-l32-20k` desde
+`estado-014880.pth`, con las mismas banderas salvo el calendario: `--iterations 30000`,
+`--hitos 14880` (lr 2e-4 desde la 14 881) y `--meseta 2 --meseta-psnr --meseta-mitades 4` (lr/2
+cuando pasan 2 evaluaciones seguidas sin récord del NRMSE de COSMOS ni del PSNR en el cerebro, hasta
+4 veces; agotadas, la meseta siguiente corta). La meseta parte de cero: la primera evaluación de la
+rama fija las dos referencias. μ = 0.008, targets 0.15, 0.02 y 0.05. ~42 h si llega a la 30 000.
+- **Pregunta:** si bajar el lr saca a la corrida de la meseta, en denoising y en QSM al mejor
+  target, y si achica la oscilación entre evaluaciones.
+- **Predicción:**
+  - el PSNR en el cerebro supera 34.02 dB en alguna de las 4 primeras evaluaciones (hasta la
+    16 864) y termina en 34.1–34.5 dB;
+  - la oscilación baja: el NRMSE de COSMOS a 0.02 varía menos de 1 pp en 4 evaluaciones seguidas
+    (en la rama a 20 000, 1.8 pp);
+  - el mejor QSM baja de lo visto: COSMOS (0.02) ≤ 25.9 %, Sim2 (0.05) ≤ 35.7 %;
+  - el mejor target no cambia: 0.02 en COSMOS y 0.05 en Sim2;
+  - la meseta parte el lr al menos 2 veces antes de la 30 000;
+  - a lo sumo 1 rebobinado, y ninguna `TRABADA`.
+- **Se reporta:** el PSNR en el cerebro, el NRMSE a SNR 25, 50 y 100, el QSM por target y sujeto,
+  las mitades de la meseta con su iteración, los rebobinados, las alertas y, si corta, dónde.
+
+**Lanzada** (26-10, 11:19): `runs/ciego-epocas-l32-30k`, unidad `tdv-ciego-epocas-l32-30k`, con
+las banderas de su `plan.sh` y la copia del código de la rama a 20 000. W&B `ata3j1cj`, en el grupo
+`ciego-epocas-l32`, enlazada a `4027tbsv` (`padre_id`). Hereda `best_qsm.pth` de la 12 896
+(25.95 %).
+
+## 2026-10-26 — Auditoría del ruido y de los datos QSM (pedido del supervisor)
+
+**Pedido** (del supervisor, por segunda vez, vía el autor): que el SNR del ruido inyectado está mal,
+porque las imágenes no muestran el ruido que dicen; que el ruido se pondere por el máximo absoluto;
+que el NRMSE de COSMOS no sea un falso positivo, y que Sim2 no sea simulado.
+`scripts/auditoria_ruido_26_10.py` (CPU, con la GPU 1 en la rama a 30 000); números en
+`runs/auditoria-ruido/`, figuras en `docs/Sanity Check/26-10-auditoria-ruido/`.
+
+**El ruido del denoising está bien; las figuras viejas lo rotulaban con otra convención.**
+- **El código:** `--val-snr` suma N(0, σ²) con σ = 1/SNR (`valida_niveles` →
+  `evaluate_denoising3d` → `add_noise`), sin recortar, con una realización fija por volumen
+  (semilla 1234 + i). El entrenamiento usa la misma escala: σ ∈ [0.81, 55]/255 es SNR de 4.6 a 315.
+- **El máximo absoluto vale 1:** cada T1 se divide por el percentil 99.5 de sus vóxeles positivos y
+  se recorta a [0, 1]. En los 12 volúmenes de validación el máximo es exactamente 1, en el volumen
+  entero y en el recorte de 128³ (0.25–0.38 % de los vóxeles del recorte vale 1). Así, SNR =
+  máximo/σ = 1/σ: la convención que pide el supervisor es la vigente desde el 23-10.
+- **Medido:** la sd de ruidosa − limpia es 0.09805, 0.04000, 0.02000 y 0.01000 a SNR 10.2, 25, 50
+  y 100, en los 12 a ±0.3 %, con media ≤ 1.5·10⁻⁴ y forma gaussiana
+  (`26-10-1-ruido_inyectado_t1.png`).
+- **Lo que estaba mal son las figuras del 21 y 22-10** (`resultados-*/seed1/`, las grillas y los
+  resúmenes de semillas): usan σ = 0.316/SNR, con la media del cerebro. Su «SNR 25» es σ = 0.0126,
+  que por el máximo es SNR 79, con 3.16 veces menos ruido que el rótulo. Además se mostraban con
+  ventana [0, 0.51] y fuera del cerebro en 0. Las figuras nuevas usan σ = máximo/SNR, en gris
+  [0, 1].
+- **Cuánto ruido es:** en el cerebro la intensidad media es 0.314 y el p99.9, 0.52. A SNR 25 el
+  ruido es el 13 % de la media del cerebro; a SNR 100, el 3 %, del orden de la variación fina
+  propia de LDM_100k (σ 0.004–0.008, «El SNR propio de los datos»). El máximo dentro del cerebro
+  tiene mediana 0.97 (0.68–1.0), por unos pocos vóxeles; ponderando por él, el SNR casi no cambia.
+
+**La red vigente a esos SNR** (it 14 880, la de `best.pth` de la rama a 20 000;
+`26-10-2-denoising_red_vigente.png`). En `sub-028881` (CPU, fp32), en el cerebro:
+
+| SNR | PSNR entrada → salida | NRMSE entrada → salida | 12 volúmenes, NRMSE (validación, bf16) |
+|---|---|---|---|
+| 10.2 | 20.18 → 34.12 dB | 29.08 → 5.84 % | PSNR 34.02 dB |
+| 25 | 27.97 → 37.74 dB | 11.87 → 3.85 % | 12.19 → 4.01 % |
+| 50 | 33.99 → 40.74 dB | 5.93 → 2.73 % | 6.10 → 2.84 % |
+| 100 | 40.01 → 43.92 dB | 2.97 → 1.89 % | 3.05 → 1.98 % |
+
+Mejora la entrada en los cuatro niveles (en los 12: +9.7, +6.6 y +3.7 dB a SNR 25, 50 y 100).
+
+**COSMOS: la fase es simulada desde χ_COSMOS, con el mismo kernel que invierte el ADMM.**
+`params.mat` (del repositorio CIB-UC-QSM/TDV, escrito el 2020-11-10) trae `phase_use`, `magn_use`
+y `kernel`; su fase no es la adquirida del challenge 2016 (`26-10-3-campos_cosmos_sim2.png`):
+- **φ − D∗χ_COSMOS es ruido blanco gaussiano.** Con el kernel de `params.mat` (el dipolo continuo
+  con B0 en el eje 2, a 4·10⁻³), la pendiente es 0.9996 y la correlación 0.967 en χ ≠ 0. La
+  autocorrelación del residuo a un vóxel es ≤ 0.007 (la del campo, 0.78–0.89). Tras suavizar 1.5
+  vóxeles le queda la misma energía que a un ruido blanco con su heterocedasticidad (0.0065 y
+  0.0065), la curtosis de r·m es 3.01 y la sd de r va como 1/m, salvo en el decil de menor
+  magnitud (el borde).
+- **Sale del ángulo de una señal compleja.** φ está acotada en ±0.16233 ppm = ±π/(γB0TE),
+  con γB0TE = 19.35 rad/ppm (B0·TE = 0.0723 T·s; por ejemplo, 2.89 T y 25 ms). Fuera de la cabeza
+  la fase es uniforme en ese intervalo (rms 0.09372, el de la uniforme), y la magnitud es Rayleigh
+  de σ = 0.01000 (por la mediana y por la media). Un σ redondo, el mismo en el fondo y en el
+  residuo de la fase, es el de un ruido sumado en la simulación.
+- **El ruido es de SNR 100 por el máximo:** σ = 0.0100 con la magnitud de máximo 1 (1.012 con el
+  ruido), que es SNR 26 por la media de la magnitud en el cerebro. El fondo y el residuo de la fase
+  dan el mismo σ (0.009996 y 0.009999).
+- **Lectura:** el 25.95 % no es un error de código, pero es optimista. Es un crimen inverso: el
+  dato sale del mismo χ, con el mismo kernel y en la misma grilla con que se invierte, y no trae
+  desajuste de modelo, sólo ruido blanco. No dice cómo le iría a la red con una fase adquirida.
+  Comparar con el 25.94 % del autor es justo, porque es el mismo dato; compararlo con resultados
+  in vivo, no.
+- **Además se elige con la GT** (ya anotado en «La evaluación QSM» y en «Abierto», α sin GT). La
+  parada pesa poco al mejor target: en la 14 880 a 0.02, el NRMSE queda en 26.11–26.15 % de la
+  iteración 18 a la 22, y a 50 iteraciones (target 0.02, μ 0.01) en 26.15–26.17 %. El update no
+  baja del TOL (1.15 %) en ninguna, así que la parada del autor correría las 100. El target pesa
+  más: al mejor de Sim2 (0.05), COSMOS da 29.88 % (+3.8 pp), y al mejor de COSMOS (0.02), Sim2 da
+  39.44 % (+3.4 pp).
+- **Referencias en el mismo dato**, con el λ elegido también con la GT: Tikhonov de gradiente en
+  forma cerrada, 46.0 % en COSMOS y 50.9 % en Sim2; TKD, 62.5 y 63.6 %; el χ₀ del ADMM, 65.8 y
+  70.3 %.
+- **Corrige a E0** (21-10): su correlación de COSMOS, 0.80, se midió en la máscara refinada, que
+  suma ~3 800 vóxeles de borde con χ = 0 y magnitud casi nula, donde la fase es casi uniforme. En
+  χ ≠ 0 es 0.967. Su lectura («una simulación directa con ruido») queda.
+
+**Sim2 es simulado, pero no con este modelo.** Es el sujeto simulado de `../tdv/data_mat`, y por
+su nombre y su grilla (164 × 205 × 205, 1 mm) corresponde al fantoma del QSM Reconstruction
+Challenge 2.0, que entregó imágenes GRE multieco sintetizadas con un simulador de RM a partir de
+un fantoma de cabeza in silico (Marques et al., *Magn. Reson. Med.* 2021). La fase (`Sim2.mat`,
+escrita el 2025-05-06) no la arma este repositorio:
+- **φ − 0.965·D∗χ_GT tiene estructura:** la pendiente es 0.965 y la correlación 0.883. La
+  autocorrelación a un vóxel es 0.18–0.26, y tras suavizar le queda el 4.2 % de la energía, contra
+  0.57 % del ruido blanco. La curtosis es 118 y la sd del residuo, 0.0126 ppm en el decil de menor
+  peso (el borde). Por Haar, sólo el 14 % del residuo es blanco a la escala de un vóxel (en COSMOS,
+  el 83 %).
+- **Lectura:** no es un crimen inverso con el kernel del ADMM. Trae un desajuste de modelo, de
+  borde y cerca de las fuentes (E0), y por eso es la prueba más exigente de las dos: ahí la red da
+  35.75–36.08 %. Ninguno de los dos sujetos es una fase adquirida.
+
+**Qué cambia:** nada en la corrida en vuelo. `--val-snr` ya pondera por el máximo, y COSMOS sigue
+eligiendo `best_qsm.pth`, sabiendo que es una simulación sin desajuste. Para decir algo in vivo
+falta un sujeto con fase adquirida y una referencia («Abierto», arriba).

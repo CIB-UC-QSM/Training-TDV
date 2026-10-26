@@ -187,6 +187,11 @@ reglas por número: no renumerar sin un `grep -rn` sobre `.claude/`, `scripts/` 
   - `--val-snr` usa esta convención.
   - La etapa 1 y lo anterior al 2026-10-23 usaban la media del cerebro, 0.316/σ:
     SNR_pico = SNR_media / 0.316 (3.2 → 10.2, 25 → 79, 50 → 158, 100 → 316).
+  - El pico es el máximo absoluto: en los 12 volúmenes de validación vale exactamente 1, en el
+    volumen y en el recorte. El supervisor pide esta convención (bitácora, 26-10).
+- **Los dos sujetos QSM son simulados:** la fase de COSMOS es D∗χ_COSMOS con el mismo kernel
+  del ADMM más ruido complejo de SNR 100 por el máximo (un crimen inverso), y Sim2 es del
+  challenge 2.0, con desajuste de modelo. Ningún NRMSE de la evaluación es in vivo.
 
 ## Lo que ya se sabe
 

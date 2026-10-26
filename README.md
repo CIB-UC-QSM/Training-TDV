@@ -47,8 +47,11 @@ más lentos, corren la evaluación, los tests y entrenamientos de prueba (en 3D,
 - **COSMOS (opcional, 3D).** Un sujeto del challenge QSM 2016, con susceptibilidad de referencia
   calculada de varias orientaciones de la cabeza: `params.mat` y `chi_cosmos.mat`, de `data_mat/` en
   [CIB-UC-QSM/TDV](https://github.com/CIB-UC-QSM/TDV), van en `datasets/qsm_cosmos/` (o en
-  `--qsm-datos`). Sin ellos, el entrenamiento avisa y sigue sin la evaluación QSM; con `--meseta`,
-  que decide con ella, sale con error al arrancar.
+  `--qsm-datos`). La fase de `params.mat` es simulada: D∗χ_COSMOS con el mismo kernel, más ruido
+  complejo de σ = 0.01 del máximo de la magnitud (SNR 100). El NRMSE en COSMOS es el de un crimen
+  inverso, no el de una fase adquirida (bitácora, «Auditoría del ruido y de los datos QSM»).
+  Sin esos archivos, el entrenamiento avisa y sigue sin la evaluación QSM; con `--meseta`, que
+  decide con ella, sale con error al arrancar.
 
 ## Uso
 
@@ -644,8 +647,9 @@ artículo.
   que la 1 en la 64 000); evaluadas sólo en CBSD68, que también elige `best.pth` (en la 1, el
   último). El efecto del disyuntor sobre la tasa de fallos no está medido. Del 3D, la más larga es
   `ciego-epocas-l32-10k`: 10 000 iteraciones (ruido ciego log-uniforme, épocas, lote 32), una
-  semilla. Su rama `ciego-epocas-l32-20k` sigue hasta la 20 000 (bitácora, «La rama a 20 000»). En
-  3D no hay dispersión entre semillas medida.
+  semilla. Su rama `ciego-epocas-l32-20k`, con lr constante, llegó a la 15 875; desde su 14 880
+  sigue `ciego-epocas-l32-30k`, con lr/2 y meseta, hasta la 30 000 (bitácora, «La rama a
+  30 000»). En 3D no hay dispersión entre semillas medida.
 - **QSM.** COSMOS elige `best_qsm.pth` y el target entre varios: su NRMSE es optimista. Sim2 se
   registra sin elegir, pero con los dos se fijaron μ y la lista de targets. El prior se entrena
   sobre magnitud T1 y se aplica a `χ`, con signo y otra amplitud, y la red entera se usa como

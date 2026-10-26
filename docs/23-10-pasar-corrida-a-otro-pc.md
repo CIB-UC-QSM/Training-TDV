@@ -1,7 +1,7 @@
 # Pasar una corrida a medio entrenar a otro PC
 
-Un ejemplo completo con la corrida en vuelo, `ciego-epocas-l32-20k`: cómo pasarla de la 5070 Ti de
-este PC («origen») a la RTX PRO 6000 de 96 GB («destino»), para que allá siga hasta la 20 000. Con
+Un ejemplo completo con la corrida en vuelo, `ciego-epocas-l32-30k`: cómo pasarla de la 5070 Ti de
+este PC («origen») a la RTX PRO 6000 de 96 GB («destino»), para que allá siga hasta la 30 000. Con
 otra corrida, se cambian el nombre y las banderas.
 
 ## Qué viaja
@@ -13,7 +13,7 @@ Todo lo que hace falta para seguir está en `estado-<it>.pth`, dentro de la carp
 - los contadores del disyuntor y su respaldo;
 - el historial.
 
-`train3d.py` lo escribe cada `--guardar-cada` iteraciones (aquí, 496: la 10 416, la 10 912…), y
+`train3d.py` lo escribe cada `--guardar-cada` iteraciones (aquí, 496: la 15 376, la 15 872…), y
 siempre en la última. Reanudar desde un estado sigue la corrida en el mismo punto: los mismos
 parches y el mismo ruido.
 
@@ -28,20 +28,20 @@ El resto de la carpeta lo lee la reanudación o el seguimiento:
 
 1. **El último estado:**
    ```bash
-   ls runs/ciego-epocas-l32-20k/estado-*.pth | tail -1      # p. ej. estado-010912.pth
+   ls runs/ciego-epocas-l32-30k/estado-*.pth | tail -1      # p. ej. estado-015376.pth
    ```
 2. **Si la corrida sigue viva,** se espera al estado siguiente y se para en cuanto aparece: se
    pierde lo hecho desde el último estado. El estado se escribe después de la validación de esa
    iteración, a un temporal que se renombra al final: si `ls` lo muestra, está entero.
    ```bash
-   ls runs/ciego-epocas-l32-20k/estado-*.pth | tail -1      # repetir hasta que cambie
-   systemctl --user stop tdv-ciego-epocas-l32-20k
+   ls runs/ciego-epocas-l32-30k/estado-*.pth | tail -1      # repetir hasta que cambie
+   systemctl --user stop tdv-ciego-epocas-l32-30k
    ```
-   Parada antes de la línea de log siguiente al estado (`[ 10925/20000]` tras el de la 10 912),
+   Parada antes de la línea de log siguiente al estado (`[ 15400/30000]` tras el de la 15 376),
    W&B sigue la misma corrida; parada después, abre otra (paso 5). Si termina sola, el estado final
-   es `estado-020000.pth`.
+   es `estado-030000.pth`, o el de la iteración en que corte la meseta.
 3. **Nunca en los dos PC a la vez:** escribirían el mismo `--out` y la misma corrida de W&B.
-4. **Anotar el comando entero:** está en `runs/ciego-epocas-l32-20k/plan.sh`. Al reanudar se
+4. **Anotar el comando entero:** está en `runs/ciego-epocas-l32-30k/plan.sh`. Al reanudar se
    repiten todas las banderas. Sólo pueden cambiar las de `LIBRES` en `train3d.py`:
    - iteraciones, cadencias, memoria y seguimiento;
    - las de la evaluación QSM, también `--qsm-sim2`;
@@ -52,8 +52,8 @@ El resto de la carpeta lo lee la reanudación o el seguimiento:
 
 ## 2. En el destino: código y entorno
 
-El mismo código que corre en el origen: el de `runs/ciego-epocas-l32-20k/codigo/`, que el paso 3
-compara con el clon.
+El código viaja con la corrida: el destino corre la copia de `runs/ciego-epocas-l32-30k/codigo/`,
+la misma que en el origen. Del clon salen el entorno (`uv.lock`) y las listas de datos.
 
 ```bash
 # en el origen, si todavía no está en GitHub (lo decide el autor):
@@ -80,45 +80,45 @@ archivos en vez de enlaces.
 D=usuario@destino:Training-TDV/
 rsync -aRL --info=progress2 datasets/ldm100k3d/images datasets/ldm100k3d/mascaras \
     datasets/qsm_cosmos datasets/qsm_sim2 $D
-rsync -aRL --info=progress2 runs/ciego-epocas-l32-20k $D
+rsync -aRL --info=progress2 runs/ciego-epocas-l32-30k $D
 ```
 
 Los datos pesan ~32 GB, y cada estado de la corrida, ~48 MB. Las listas (`lista_train_1000.txt`,
 `lista_eval.txt`) vienen con el clon. Los estados viejos se pueden excluir, por ejemplo con
-`--exclude 'estado-010*'`; el que se va a reanudar, no.
+`--exclude 'estado-015*'`; el que se va a reanudar, no.
 
 ```bash
 # en el destino, desde Training-TDV/:
 find -L datasets/ldm100k3d/images datasets/ldm100k3d/mascaras datasets/qsm_cosmos \
     datasets/qsm_sim2 -type f | wc -l            # 4028
-ls runs/ciego-epocas-l32-20k/estado-010912.pth
-C=runs/ciego-epocas-l32-20k/codigo                # sin salida: el mismo código
-diff -q train3d.py $C/train3d.py; diff -q train.py $C/train.py
-diff -rq --exclude=__pycache__ ddr $C/ddr
+ls runs/ciego-epocas-l32-30k/estado-015376.pth runs/ciego-epocas-l32-30k/codigo/train3d.py
 ```
 
 ## 4. Reanudar en el destino
 
-Es el comando de `plan.sh`, con tres diferencias:
-- `--reanudar` apunta al estado copiado de esta corrida, no al de la 10 000 del que salió la rama;
-- corre el `train3d.py` del repositorio, no la copia en `codigo/` (son iguales: paso 3);
+Es el comando de `plan.sh`, con dos diferencias:
+- `--reanudar` apunta al estado copiado de esta corrida, no al de la 14 880 del que salió la rama;
 - sin `CUDA_VISIBLE_DEVICES=1` ni `taskset -c 16-31`.
 
+El calendario (`--hitos 14880` y la meseta) va igual: en el mismo `--out` no se puede cambiar, y
+la cuenta de la meseta viaja en el estado.
+
 Las reglas 11 y 12 de AGENTS.md (la GPU 1, los hilos 16–31) son de este PC: allá se usa la GPU
-que tenga. `--iterations` queda en 20 000; para seguir más allá, se sube el techo.
+que tenga. `--iterations` queda en 30 000; para seguir más allá, se sube el techo.
 
 ```bash
-systemd-run --user --collect --unit tdv-ciego-epocas-l32-20k -p WorkingDirectory=$PWD \
-    bash -c ".venv/bin/python -u train3d.py \
-    --out runs/ciego-epocas-l32-20k --iterations 20000 --lote 32 --epocas \
-    --reanudar runs/ciego-epocas-l32-20k/estado-010912.pth \
-    --hitos --meseta 0 --mascara-cerebro --seed 3 --guard 10 \
+systemd-run --user --collect --unit tdv-ciego-epocas-l32-30k -p WorkingDirectory=$PWD \
+    bash -c ".venv/bin/python -u runs/ciego-epocas-l32-30k/codigo/train3d.py \
+    --out runs/ciego-epocas-l32-30k --iterations 30000 --lote 32 --epocas \
+    --reanudar runs/ciego-epocas-l32-30k/estado-015376.pth \
+    --hitos 14880 --meseta 2 --meseta-psnr --meseta-mitades 4 \
+    --mascara-cerebro --seed 3 --guard 10 \
     --train-list datasets/ldm100k3d/lista_train_1000.txt \
     --sigma-min 0.81 --sigma-max 55 --sigma-log \
     --eval-every 496 --eval-qsm-cada 0 --qsm-target-std 0.15 0.02 0.05 --qsm-sim2 datasets/qsm_sim2 \
     --val-snr 25 50 100 --estabilidad-lado 0 \
     --guardar-cada 496 --log-every 25 --seguimiento online \
-    >> runs/ciego-epocas-l32-20k/salida.log 2>&1"
+    >> runs/ciego-epocas-l32-30k/salida.log 2>&1"
 ```
 
 La unidad de systemd usa `.venv/bin/python`, no `uv run`, porque el `PATH` de una unidad no
@@ -127,7 +127,7 @@ incluye `~/.local/bin`.
 ## 5. Verificar los primeros minutos
 
 ```bash
-tail -f runs/ciego-epocas-l32-20k/salida.log
+tail -f runs/ciego-epocas-l32-30k/salida.log
 ```
 
 - **`AVISO: el micro-lote pasa de 3 a N`.** En 96 GB, `auto` elige trozos más grandes. Cambia el
@@ -139,15 +139,15 @@ tail -f runs/ciego-epocas-l32-20k/salida.log
   del estado y no los reescribe: abre otra con el mismo nombre y en el mismo grupo (`nueva`), y el
   id viejo queda en `descartadas` de `seguimiento.json`.
 - **La primera línea de iteración:** su pérdida tiene que ser del orden de la del origen en esa
-  zona (15–25 en la 11 000), con `rech` y `reb` siguiendo los contadores.
+  zona (15–25 en la 15 000), con `rech` y `reb` siguiendo los contadores.
 - **La primera validación** va en el múltiplo de 496 siguiente: el PSNR en el cerebro tiene que
-  seguir la curva de W&B (33.75 dB en la 10 912), sin saltos.
+  seguir la curva de W&B (~34 dB en la 15 000), sin saltos.
 
 ## 6. Para traerla de vuelta
 
 Lo mismo al revés:
 1. parar después de un estado;
-2. copiar `runs/ciego-epocas-l32-20k` al origen;
+2. copiar `runs/ciego-epocas-l32-30k` al origen;
 3. reanudar con `--vram-gb 16`, o dejar `auto`.
 
 Vuelve el `AVISO` del micro-lote.
@@ -157,14 +157,15 @@ Vuelve el `AVISO` del micro-lote.
 Con otro `--out` y el mismo `--reanudar`, la corrida es una rama (`ddr/seguimiento.py`, bloque
 final): el entrenamiento sigue exacto (pesos, Adam, parches, ruido, contador de iteraciones), pero
 abre una corrida nueva de W&B, en el grupo de la original, que empieza en la iteración siguiente al
-estado. La historia vieja queda en las corridas viejas. Así salió `ciego-epocas-l32-20k` de
-`ciego-epocas-l32-10k`:
+estado. La historia vieja queda en las corridas viejas. Así salió `ciego-epocas-l32-30k` de
+`ciego-epocas-l32-20k`, que además cambió el calendario (`CALENDARIO`, en `train3d.py`):
 
 ```bash
---out runs/ciego-epocas-l32-20k --reanudar runs/ciego-epocas-l32-10k/estado-010000.pth
+--out runs/ciego-epocas-l32-30k --reanudar runs/ciego-epocas-l32-20k/estado-014880.pth \
+    --hitos 14880 --meseta 2 --meseta-psnr --meseta-mitades 4
 ```
 
-- **El eje x sigue en 10 001, no en 0:** el contador es parte del estado, y de él dependen los
+- **El eje x sigue en 14 881, no en 0:** el contador es parte del estado, y de él dependen los
   hitos del lr.
 - **`best.pth` y `best_qsm.pth` se heredan del estado:** la rama sólo escribe un `best_qsm.pth`
   nuevo si mejora el mejor de la corrida original.

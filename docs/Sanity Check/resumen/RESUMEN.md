@@ -4,11 +4,26 @@
 Esta carpeta, `resumen/`, sí va en git: resume lo vigente con tres figuras nuevas e inventaría las
 viejas. Los detalles y los números de cada medición están en `docs/bitacora.md`.
 
+## La auditoría del 26-10 (`../26-10-auditoria-ruido/`)
+
+Pedida por el supervisor: si el ruido inyectado tiene el SNR que dice y si COSMOS y Sim2 son
+simulados. Los números, en `docs/bitacora.md` («Auditoría del ruido y de los datos QSM», 26-10).
+
+- `26-10-1-ruido_inyectado_t1.png`: el ruido de la validación a SNR 10.2, 25, 50 y 100 por el
+  máximo absoluto (que vale 1 en los 12 volúmenes), con zoom de un píxel por vóxel, el histograma
+  de ruidosa − limpia y, al lado, el «SNR 25» de las figuras viejas (SNR 79 por el máximo).
+- `26-10-2-denoising_red_vigente.png`: la red de la 14 880 a esos SNR, con las métricas en el
+  cerebro.
+- `26-10-3-campos_cosmos_sim2.png`: la fase de COSMOS es D∗χ_COSMOS más ruido blanco complejo de
+  SNR 100 por el máximo (un crimen inverso); la de Sim2 trae un desajuste con estructura.
+
 ## Antes de mirar las figuras viejas
 
 - **Todas usan la convención de SNR vieja:** la media del cerebro sobre σ (0.316/σ). La vigente,
   desde el 23-10, es pico/σ con pico 1: SNR_pico = SNR_media / 0.316 (3.2 → 10.2, 25 → 79,
-  50 → 158, 100 → 316). Sólo `por-que-no-reescalar/22-10-por-que-no-reescalar.txt` lo aclara.
+  50 → 158, 100 → 316). Por eso su «SNR 25» muestra 3.16 veces menos ruido que un SNR 25 por
+  el máximo, la explicación más probable de que el supervisor viera menos ruido que el rotulado.
+  Sólo `por-que-no-reescalar/22-10-por-que-no-reescalar.txt` lo aclara.
 - **Ninguna muestra la red vigente:** son redes cortas ya superadas (la control de σ fijo, 1 500
   iteraciones; la de sobreajuste; `etapa2-ciega`; `ciego-log-l32` y `prep3d-g10-s2-2500`, 2 250).
 - **De las tres semillas de ruido queda `seed1/`:** la semilla mueve el NRMSE ≤ 0.01 pp.
