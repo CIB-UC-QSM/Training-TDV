@@ -35,7 +35,8 @@ def _load_pil(path: Path, channels: int) -> np.ndarray:
     """PNG/JPG de 8 bits, normalizados a [0, 1]."""
     mode = {1: "L", 3: "RGB"}.get(channels)
     if mode is None:
-        raise ValueError(f"PIL no maneja {channels} canales; registrá un cargador propio")
+        raise ValueError(f"PIL no maneja {channels} canales: hace falta un cargador propio en "
+                         "IMAGE_LOADERS")
     a = np.asarray(Image.open(path).convert(mode), dtype=np.float32) / 255.0
     if a.ndim == 2:
         a = a[:, :, None]
@@ -66,7 +67,7 @@ def load_image(path: str | Path, channels: int = 3) -> np.ndarray:
     path = Path(path)
     loader = IMAGE_LOADERS.get(path.suffix.lower())
     if loader is None:
-        raise ValueError(f"sin cargador para {path.suffix!r}; registralo en IMAGE_LOADERS")
+        raise ValueError(f"sin cargador para {path.suffix!r}: se registra en IMAGE_LOADERS")
     return loader(path, channels)
 
 
@@ -99,6 +100,7 @@ def add_noise(y: torch.Tensor, sigma: float, generator=None, noise_scale: float 
 
 
 def psnr(x, y, data_range: float = 1.0) -> float:
+    """PSNR en dB de `x` contra `y` (tensores o arreglos); inf si son iguales."""
     if isinstance(x, torch.Tensor):
         x = x.detach().cpu().numpy()
     if isinstance(y, torch.Tensor):

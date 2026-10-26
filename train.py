@@ -50,7 +50,7 @@ ACUMULACION = BATCH_SIZE // MICRO_BATCH
 
 # --- CONTROLES APRENDIDOS --------------------------------------------------------------------
 DELTA_ADAM = LR / math.sqrt(1 - BETAS[1])   # = 0.01265, el paso de Adam ante un pico
-T_INIT = 8 * DELTA_ADAM # Cercano a 0.1
+T_INIT = 8 * DELTA_ADAM                     # ≈ 0.1012
 # `ITERATIONS` es la receta publicada y no se toca. Las tandas de trabajo corren 10k: con T en
 # 10 delta la PSNR llega a su mejor valor antes de la it 5000 y los eventos caen antes de la 4500.
 ITERACIONES_TANDA = 10_000
@@ -110,8 +110,8 @@ def rechaza_lote(gnorm: float, amp: float, escala: list[float], ratio: float, ab
     # El relativo sigue la escala de la corrida, que se mueve dos órdenes a lo largo del
     # entrenamiento; se arma recién cuando la ventana se llena, porque antes no es estimable.
     fuera = len(escala) >= ventana and gnorm > ratio * centro
-    # El absoluto queda para las primeras 100 iteraciones, el único tramo sin relativo desde que
-    # la ventana viaja con el respaldo, y no se puede quedar viejo porque no se estima de nada.
+    # El absoluto queda para las primeras 100 iteraciones, el único tramo sin relativo porque la
+    # ventana viaja con el respaldo, y no se puede quedar viejo porque no se estima de nada.
     # Un solo paso con NaN o inf vuelve NaN los 388k pesos, así que no pasan nunca.
     if not math.isfinite(gnorm) or gnorm > abs_max or fuera or amp > amp_max:
         return True, centro
@@ -132,18 +132,19 @@ def rebobina(model: torch.nn.Module, opt: torch.optim.Optimizer,
              respaldo: tuple[dict, dict, list[float]], escala: list[float]) -> None:
     """Vuelve pesos, momentos y ventana al respaldo: los tres son el mismo estado. El lr no."""
     model.load_state_dict(respaldo[0])
-    # `load_state_dict` adopta los tensores que recibe: sin la copia, los pasos siguientes mutan el
-    # respaldo y el segundo rebobinado al mismo ya no devuelve Adam (el lazo de t1-guard-2delta-5k).
+    # `load_state_dict` adopta los tensores que recibe: sin la copia, los pasos siguientes mutarían
+    # el respaldo y el segundo rebobinado al mismo ya no devolvería Adam.
     lr = [g["lr"] for g in opt.param_groups]
     opt.load_state_dict(copy.deepcopy(respaldo[1]))
-    # El lr es del calendario, no de la corrida: restaurarlo deshacía un halving cruzado.
+    # El lr es del calendario, no de la corrida: restaurarlo desharía un halving cruzado.
     for g, valor in zip(opt.param_groups, lr):
         g["lr"] = valor
-    # Borrarla dejaba el relativo desarmado 100 iteraciones justo al salir del evento.
+    # Borrarla dejaría el relativo desarmado 100 iteraciones justo al salir del evento.
     escala[:] = respaldo[2]
 
 
 def main() -> None:
+    """Una corrida 2D con la receta del paper; las banderas, en el README."""
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--out", required=True, help="directorio de salida")
     p.add_argument("--mode", choices=MODES, default="referencia")
@@ -151,7 +152,7 @@ def main() -> None:
     p.add_argument("--t-init", type=float, default=T_INIT)
     p.add_argument("--sigma", type=float, default=SIGMA,
                    help="sigma del ruido de entrenamiento y, siempre, el de la evaluación")
-    # Candidata de la fase 2, apagada: con el default la corrida es la receta.
+    # Ruido ciego, apagado por defecto: con el default la corrida es la receta.
     p.add_argument("--sigma-max", type=float, default=0.0,
                    help="> 0 sortea sigma ~ U(--sigma-min, --sigma-max) por parche (ruido ciego)")
     p.add_argument("--sigma-min", type=float, default=0.0)
@@ -332,9 +333,8 @@ def main() -> None:
         sched.step()
         model.project_()   # media cero y norma <=1 en K1, positividad de T y lambda
 
-        # Rechazar llega tarde cuando los pesos ya están en la cuenca mala: `‖g‖` se mide en los
-        # pesos de ahora, así que dice dónde está la corrida, no a dónde la lleva el paso. El
-        # rebobinado es la única salida que no corta el bucle, y cortarlo invertiría la censura.
+        # Rechazar llega un paso tarde, y el rebobinado es la única salida que no corta el bucle
+        # (docs/porque-del-codigo.md, DISYUNTOR DE LOTES).
         rebobinado = False
         if rechazado:
             rechazos += 1
@@ -351,10 +351,8 @@ def main() -> None:
         else:
             seguidos = 0
             limpias += 1
-            # Una iteración sana no alcanza: dentro de una excursión letal hay lotes aceptados
-            # —hueco máximo 1, medido—, así que el respaldo pide `guard_limpias` seguidas. Y se
-            # cuenta desde el último, no por múltiplos de `it`: con múltiplos, una corrida que se
-            # daña antes del primero se queda sin respaldo para siempre.
+            # El respaldo pide `guard_limpias` sanas seguidas y cuenta desde el último, no por
+            # múltiplos de `it` (docs/porque-del-codigo.md, DISYUNTOR DE LOTES).
             if limpias >= args.guard_limpias and (
                     respaldo is None or it - it_respaldo >= args.guard_respaldo):
                 respaldo, it_respaldo = respalda(model, opt, escala), it
@@ -414,23 +412,5 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 
-'''
-# --- BUCLE -----------------------------------------------------------------------------------
-# Cómo se corre y cada bandera, en el README. `main()` arma modelo, datos, Adam y los hitos del lr,
-# y repite `--iterations` veces:
-#   1. Dos micro-lotes de MICRO_BATCH = 16 parches de 93x93 con flips y rotaciones: los 32 del
-#      paper con la mitad de memoria y el mismo gradiente, porque ninguna capa mezcla muestras.
-#   2. Ruido gaussiano nuevo sobre cada parche limpio `y`; la imagen ruidosa `z` es también x_0.
-#   3. S = 10 pasos x_s = prox(x_{s-1} − (T/S)·∇R(x_{s-1})): R es la energía TDV aprendida, y el
-#      prox, (x + (λ/S)·z)/(1 + λ/S), tira hacia `z` con peso λ/S.
-#   4. Pérdida ‖x_S − y‖², sumada por imagen y promediada sobre el lote: sólo cuenta x_S.
-#   5. Backward. `clip_grad_norm_` devuelve ‖g‖, la norma global del gradiente (con `--clip inf`
-#      no recorta), y con ella el disyuntor decide si hay paso de Adam. El lr avanza igual.
-#   6. `model.project_()`: cada filtro de K1, la primera convolución, con media cero y norma ≤ 1,
-#      que es la restricción del paper; T y λ recortados a [0, 1000], el rango del `config` oficial.
-#   7. Una fila de traza; cada `--log-every`, una línea de log; cada `--eval-every`, evaluación.
-# El bucle no tiene `break` ni chequeo de NaN: una corrida que estalla sigue hasta la última
-# iteración, y sólo ahí se escribe `estado.json`. Si ese archivo falta, se cortó desde afuera.
-# El resto de las notas de este archivo, en docs/porque-del-codigo.md, «train.py (la receta que
-# hereda el 3D)».
-'''
+# El bucle y el resto de las notas de este archivo: docs/porque-del-codigo.md, «train.py (la
+# receta que hereda el 3D)».

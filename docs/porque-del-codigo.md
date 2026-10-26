@@ -30,7 +30,12 @@ Al final, `cierra` escribe `estado.json`. Respecto de `train.py`, cuatro diferen
 1. Parches de `PATCH_SIZE`³ de `ddr.data3d.PatchDataset3D`, con al menos 35 % de tejido
    (`MIN_TEJIDO`; o, con `--mascara-cerebro`, cubos enteros dentro del cerebro) y una de las 48
    simetrías del cubo, partidos en ceil(`--lote` / `--micro-lote`) trozos casi iguales. El
-   micro-lote lo elige la memoria (MEMORIA y MICRO-LOTES).
+   micro-lote lo elige la memoria (MEMORIA y MICRO-LOTES). Sin `--epocas`, cada parche sale de
+   un volumen al azar, con reemplazo. Con `--epocas`, una época es una pasada por los volúmenes
+   (con `--mascara-cerebro`, los que tienen cubos), un parche de cada uno en el orden de una
+   permutación por época, sin los que no completan un lote: con la lista de 1 000, 992 parches
+   y 31 iteraciones. `lotes_por_epoca` arma un DataLoader por época, y reanudar a mitad de época
+   empieza por lo que falta (`test_epocas_reanuda_bit_a_bit_y_cambia_el_sorteo`).
 2. El lr no lo lleva un scheduler: `lr_en(it, hitos)` lo fija al principio de cada iteración, con
    los hitos de `--meseta` sumados (MESETA).
 3. El disyuntor va con razón 10, sin cota absoluta y con el respaldo refrescado cada 50 sólo con
@@ -39,8 +44,11 @@ Al final, `cierra` escribe `estado.json`. Respecto de `train.py`, cuatro diferen
    mismo micro-lote (REANUDACIÓN).
 
 Y tres agregados que no tocan la aritmética (test): el seguimiento en W&B (SEGUIMIENTO), la
-evaluación QSM (EVALUACIÓN QSM) y el número de estabilidad (ESTABILIDAD). Como en `train.py`, el
-bucle no corta ni por NaN, ni por rechazos, ni por un fallo de W&B, del ADMM o de la estabilidad.
+evaluación QSM (EVALUACIÓN QSM) y el número de estabilidad (ESTABILIDAD). Tampoco la tocan la
+evaluación en Sim2 (`--qsm-sim2`, EVALUACIÓN QSM) y la validación a otros SNR (`--val-snr`,
+RUIDO CIEGO Y AUMENTOS): no usan los generadores del entrenamiento y están en `LIBRES`, aunque
+no tienen test de traza propio. Como en `train.py`, el bucle no corta ni por NaN, ni por
+rechazos, ni por un fallo de W&B, del ADMM o de la estabilidad.
 El único `break` de `entrena` es el de `--meseta`, apagada por defecto, y el corte queda escrito
 en `estado.json` (`test_el_bucle_corta_solo_por_meseta`). Una corrida terminó si su `estado.json`
 dice `"terminada": true`. `--sobreajuste` cambia los datos para la prueba de sobreajuste
@@ -223,10 +231,10 @@ Va sin las dos cotas del disyuntor (`revisa_banderas` pone `--guard` y `--guard-
 siguen el rechazo de un gradiente no finito, que no pasa nunca, y el rebobinado tras
 `GUARD_SEGUIDOS` rechazos. Con el mismo lote, un rechazo deja la iteración siguiente idéntica (sin
 paso de Adam no cambia nada) y se repite para siempre, y el rebobinado vuelve al mismo estallido:
-en `runs/sobreajuste-3d` (2026-10-16, semilla 1, lote 4 de 48³) el estallido de la 8 (‖g‖ 360 706
-contra una mediana de 2 314) volvió en la 37, la 66 y la 95, con los mismos ‖g‖ y pérdida en todos
-los decimales impresos. Con datos frescos el disyuntor sí sale: después de rebobinar, los parches
-siguen adelante. El resultado de la prueba: bitácora, «Lo que mostraron las sondas».
+en la sonda `sobreajuste-3d` (2026-10-16, semilla 1, lote 4 de 48³) el estallido de la 8
+(‖g‖ 360 706 contra una mediana de 2 314) volvió en la 37, la 66 y la 95, con los mismos ‖g‖ y
+pérdida en todos los decimales impresos. Con datos frescos el disyuntor sí sale: después de
+rebobinar, los parches siguen adelante. El resultado de la prueba: bitácora, «Lo que mostraron las sondas».
 
 ### MESETA
 
@@ -307,16 +315,18 @@ banderas), `arma_modelo` (los pesos), `main` (Adam y el ruido), `corrida_desde_e
 cuentas) y `restaura_generadores`. `corte` no viaja: al reanudar vuelve a None.
 
 - **Un estado anterior a una bandera de receta** la tiene en su default: `lee_estado` compara con
-  `parser.get_default` la que falta. Los de `runs/humo3d` no tienen `mascara_cerebro` y se
-  reanudan sin ella; con la bandera prendida, se rechaza
+  `parser.get_default` la que falta. Uno escrito antes de que existiera `--mascara-cerebro` no
+  la tiene y se reanuda sin ella; con la bandera prendida, se rechaza
   (`test_reanudar_un_estado_sin_banderas_nuevas`). Uno sin `qsm` arranca sin evaluaciones QSM
   previas; uno sin `mejor_qsm`, sin `best_qsm.pth`; uno sin `meseta`, con la meseta nueva.
 - **Los parches no necesitan estado:** el parche `i` sale de `(seed, offset + i)`, así que se
   reanuda con `offset = it · lote`. El generador global de torch no lo usa nada del bucle; se
   restaura igual, después de `iter(loader)`, que saca de él una semilla para los workers.
 - **Qué se puede cambiar:** seguir en el mismo `--out` sólo admite cambiar `LIBRES` (cadencias,
-  workers, seguimiento, evaluación QSM, estabilidad, `micro_lote`, `vram_gb` y `sonda_vram`); una
-  rama, además, `CALENDARIO` (`--hitos`, `--meseta`, `--meseta-mitades`, `--meseta-desde` y
+  workers, seguimiento, evaluación QSM con Sim2, estabilidad, `val_snr`, `micro_lote`, `vram_gb`,
+  `sonda_vram` y las tres del disyuntor, `guard`, `guard_abs` y `guard_respaldo`, que no tocan la
+  aritmética mientras el disyuntor no rechaza y sirven para reanudar protegida una corrida lanzada
+  sin él); una rama, además, `CALENDARIO` (`--hitos`, `--meseta`, `--meseta-mitades`, `--meseta-desde` y
   `--meseta-psnr`). Lo demás cambiaría la aritmética, y `lee_estado` lo rechaza en vez de
   ignorarlo.
 - **Seguir en otra tarjeta** cambia `--micro-lote` (o `--vram-gb`, que lo elige con `auto`), y está
@@ -408,7 +418,7 @@ el relativo es invariante de escala. En 3D cambian tres cosas, medidas (bitácor
 en 3D» y «Qué pasó con los estallidos»):
 - **`GUARD_3D = 10`, no 5.** Con 5, los escalones de ‖g‖ (5–12× la mediana, con la pérdida
   normal) se volvían rebobinados cada ~93 iteraciones. Con ruido ciego, la razón sana no pasó de
-  16.9 en 6 514 iteraciones, siempre en lotes sueltos, y el estallido de `ciego-epocas-l32` fue de
+  16.9 en 6 514 iteraciones, siempre en lotes sueltos, y el estallido de `ciego-epocas-l32` (carpeta borrada; números en la bitácora, 22-10) fue de
   1 389×.
 - **Sin cota absoluta:** si `--guard-abs` no se pasa, vale `inf`. La cota sólo decide antes de
   que la ventana se llene, y en 3D el arranque sano la cruza: en las cuatro corridas ciegas hubo
@@ -432,9 +442,17 @@ El log dice `TRABADA` y W&B manda una alerta; el bucle no se corta (AGENTS.md).
 
 Apagados por defecto: con los defaults la corrida es la receta del paper en 3D. `--sigma-max` > 0
 sortea un σ por parche en U(`--sigma-min`, `--sigma-max`) con `add_noise_ciego`, del mismo
-generador del ruido (`SIGMA_MIN = 0`: U(0, 55) es la convención de DnCNN-B). `--aug-signo` y
-`--aug-ganancia` los aplica `PatchDataset3D` después de elegir el parche y su orientación, así que
-un brazo y su control ven los mismos parches. La evaluación es siempre a `--sigma` fijo.
+generador del ruido (`SIGMA_MIN = 0`: U(0, 55) es la convención de DnCNN-B). `--sigma-log` lo
+hace log-uniforme en [`--sigma-min`, `--sigma-max`] (pide `--sigma-min` > 0). La red vigente usa
+[0.81, 55]/255: SNR (pico/σ) de 315 a 4.6; 0.81 es SNR 100 en la convención vieja, la de la media
+del cerebro (bitácora, «Ruido ciego log-uniforme»). `--fraccion-limpias p` deja cada parche sin
+ruido con probabilidad p. `--aug-signo` y `--aug-ganancia` los aplica `PatchDataset3D` después de
+elegir el parche y su orientación, así que un brazo y su control ven los mismos parches.
+
+La validación que elige `best.pth` es a `--sigma` fijo. `--val-snr` (`valida_niveles`) agrega
+niveles en SNR = pico/σ (pico 1, el percentil 99.5 al que se normaliza cada T1), con las mismas
+semillas: con las máscaras, en el cerebro. Van a `history.json`, al log y a W&B como
+`val_snr<SNR>/*`, sin elegir checkpoints.
 
 ### MÁSCARA DE CEREBRO
 
@@ -465,8 +483,9 @@ Cada `--eval-every` iteraciones y en la última, `valida_denoising` llama a `eva
 que mide el PSNR y el NRMSE medios sobre los recortes fijos de `EVAL_RECORTE`³ (128³) de la lista
 de evaluación, con ruido de semilla fija por volumen (`SEMILLA_VAL` + i), en todo el recorte y sólo
 en tejido (vóxeles limpios > `UMBRAL_TEJIDO` = 0.05), sin gradiente y en el modo de la corrida
-(bf16 en `rapido`). `train3d` no tiene épocas (sortea parches): esta validación es la «época» del
-seguimiento. Si están las máscaras de cerebro de todos los volúmenes de evaluación
+(bf16 en `rapido`). Sin `--epocas`, esta validación hace de época del seguimiento; con `--epocas`
+(BUCLE), `history.json` y W&B llevan además la época (`epoca`, `train/epoca`). Si están las
+máscaras de cerebro de todos los volúmenes de evaluación
 (`<data-root>/mascaras/val/<sujeto>.npy`), mide además el PSNR en el cerebro, con la máscara
 recortada con la misma ventana: es la región que ve el entrenamiento con `--mascara-cerebro`, que
 no ve cráneo ni aire, mientras el recorte entero los tiene. Agregarla no cambia los PSNR de antes
@@ -482,21 +501,24 @@ En `--out` quedan:
   efectivo en vez de `auto`, y `commit` (`commit_git`: el HEAD, con `+cambios` si lo versionado
   tiene cambios, o None sin git), también sin W&B.
 - **`history.json`:** una entrada por validación: `iteration`, `efectiva`, `psnr`,
-  `psnr_tejido`, `nrmse_pct`, `nrmse_pct_tejido`, `psnr_cerebro` (sólo con las máscaras),
-  `psnr_lote` (sólo con `--sobreajuste`), `T`, `lambda` y, en las que toca la estabilidad,
-  `estabilidad`, `lambda_max` y `estabilidad_cambio` (o `estabilidad_fallo`).
-- **`qsm.jsonl`:** una línea por evaluación QSM: `iteration`, `efectiva` y lo de `evalua_qsm` sin
-  el volumen `chi` (con el NRMSE y el update de cada iteración del ADMM, `nrmse_trayectoria_pct` y
-  `update_trayectoria`), o `fallo`, más las tres de la estabilidad en COSMOS (o
-  `estabilidad_fallo`). No existe si la corrida no hizo ninguna.
+  `psnr_tejido`, `nrmse_pct`, `nrmse_pct_tejido`, `psnr_cerebro` y `nrmse_pct_cerebro` (sólo con
+  las máscaras), `epoca` (sólo con `--epocas`), `psnr_lote` (sólo con `--sobreajuste`), `T`,
+  `lambda`, `val_snr<SNR>_*` (con `--val-snr`) y, en las que toca la estabilidad, `estabilidad`,
+  `lambda_max` y `estabilidad_cambio` (o `estabilidad_fallo`).
+- **`qsm.jsonl`:** una línea por evaluación QSM: `iteration`, `efectiva`, `target_std` (el
+  ganador) y lo de `evalua_qsm` sin los volúmenes `chi` y `chi0` (con el NRMSE y el update de cada
+  iteración del ADMM, `nrmse_trayectoria_pct` y `update_trayectoria`) y las métricas del panel, o
+  `fallo`; con varios targets, cada uno en `por_target`; más las tres de la estabilidad en COSMOS
+  (o `estabilidad_fallo`). No existe si la corrida no hizo ninguna.
+- **`qsm_sim2.jsonl`:** lo mismo en Sim2, con `--qsm-sim2` (EVALUACIÓN QSM), sin estabilidad.
 - **`traza.npy`:** `float64`, `COLUMNAS` = 14 por iteración (TRAZA). Se reescribe al arrancar, en
   cada validación y en cada estado.
 - **`last.pth`:** la última validación; **`best.pth`**, la de mejor PSNR en el recorte entero o,
   con `--mascara-cerebro`, en el cerebro. Claves: `config` (la de `vnet_config3d`, con R de tipo
   `tdv3d`), `model`, `iteration`, `psnr`, `optimizer`.
 - **`best_qsm.pth`:** el checkpoint para QSM (EVALUACIÓN QSM): `config`, `model`, `iteration`,
-  `psnr`, `nrmse_min_pct`, `iter_min`, `nrmse_final_pct`, `iteraciones`, `motivo` y
-  `estabilidad`, sin `optimizer`. No existe si ninguna evaluación QSM dio un NRMSE mínimo finito.
+  `psnr`, `target_std`, `nrmse_min_pct`, `iter_min`, `nrmse_final_pct`, `iteraciones`, `motivo`
+  y `estabilidad`, sin `optimizer`. No existe si ninguna evaluación QSM dio un NRMSE mínimo finito.
 - **`estado-<it>.pth`:** cada `--guardar-cada`, en la última y en un corte, todo lo que hace falta
   para reanudar (REANUDACIÓN).
 - **`estado.json`:** sólo al terminar (`cierra`), y se borra al arrancar: `terminada`,
@@ -540,18 +562,32 @@ se registra.
   columnas de la traza con los nombres de `COLUMNAS_TRAZA`, más los rechazos y rebobinados
   acumulados), `train/grad_norm_max` (el max‖g‖ del intervalo, que no pierde un estallido entre
   dos muestras), `train/s_por_it` (sin validaciones ni estados: el reloj se corre tras cada uno)
-  y, con GPU, `train/vram_pico_gib` (el pico desde el arranque, evaluaciones incluidas). Cada
+  y, con GPU, `train/vram_pico_gib` (el pico desde el arranque, evaluaciones incluidas); con
+  `--epocas`, `train/epoca` (las épocas completadas, con fracción: el eje x alternativo). Cada
   `--log-every` y no por iteración: W&B muestra lo que muestra el log, y la traza tiene todas las
   filas. Por iteración también entraba (0.185 ms por llamada, medido; 53 MB por corrida de 40 000,
   derivado), pero no agregaba nada que la traza no tenga.
-- **En cada validación:** `val/psnr`, `val/psnr_tejido`, `val/psnr_cerebro` (con las máscaras),
-  `val/nrmse_pct`, `val/nrmse_pct_tejido`, `val/psnr_lote` (con `--sobreajuste`) y la lámina
+- **En cada validación:** `val/psnr`, `val/psnr_tejido`, `val/psnr_cerebro` y
+  `val/nrmse_pct_cerebro` (con las máscaras), `val/nrmse_pct`, `val/nrmse_pct_tejido`,
+  `val/epoca` (con `--epocas`), `val/psnr_lote` (con `--sobreajuste`) y la lámina
   `val/denoising` (`lamina_denoising` del primer volumen de evaluación, siempre el mismo: limpia |
-  ruidosa | salida | 5·|error|).
+  ruidosa | salida | 5·|error|). Con `--val-snr`, por nivel: `val_snr<SNR>/psnr` y
+  `val_snr<SNR>/psnr_entrada` (en el cerebro, con las máscaras; con ellas, también `nrmse_pct` y
+  `nrmse_entrada_pct`) y la lámina `val_snr<SNR>/denoising`.
 - **En cada evaluación QSM:** `qsm/nrmse_final_pct`, `qsm/nrmse_min_pct`, `qsm/iter_min`,
-  `qsm/iteraciones`, `qsm/alpha`, `qsm/segundos`, `qsm/fallo` (0 o 1) y la lámina
-  `qsm/reconstruccion` (`lamina_qsm`: GT | reconstrucción | error en ±0.1 ppm); con `--meseta`,
-  `meseta/*`. `motivo` es texto: va al log, a `qsm.jsonl` y, el de la última, al resumen.
+  `qsm/iteraciones`, `qsm/alpha`, `qsm/segundos`, `qsm/update_final`, `qsm/fallo` (0 o 1), las
+  métricas del panel (`hfen_pct`, `xsim`, `residuo_dato_pct`, `factor_cono`, las de χ₀ como
+  `chi0_*` y `gt_residuo_dato_pct`), `qsm/mejor_target` y la lámina `qsm/reconstruccion`
+  (`lamina_qsm`: GT | χ₀ sin red | reconstrucción | error, en la máscara, ±0.1 ppm). Son las del
+  target de menor NRMSE mínimo; con varios targets, cada uno queda además en `qsm_t<target>/*`
+  (0.15 → `qsm_t015`). Con `--qsm-sim2`, lo mismo en `qsm_sim2/*` y `qsm_sim2_t<target>/*`. Con
+  `--meseta`, `meseta/*`. `motivo` es texto: va al log, a `qsm.jsonl` y, el de la última, al
+  resumen.
+- **Alertas** (`alerta`): al log como `ALERTA:` y a W&B, que las manda por correo o Slack si la
+  cuenta tiene encendidas las «Scriptable run alerts». Salen en cinco casos: cada rebobinado;
+  `TRABADA` (DISYUNTOR EN 3D); el PSNR que elige `best.pth` bajo el de la entrada ruidosa; ese PSNR
+  `CAIDA_PSNR` = 3 dB o más bajo el mejor; y el mínimo del ADMM en COSMOS en su iteración 0 (la red
+  no mejora χ₀).
 - **Con la cadencia de la evaluación QSM**, haya COSMOS o no: `val/estabilidad` y
   `val/lambda_max`; con COSMOS, también `qsm/estabilidad` y `qsm/lambda_max` (ESTABILIDAD). Una
   estabilidad que falla no registra nada en W&B: queda en el log y en `estabilidad_fallo`.
@@ -645,12 +681,14 @@ suya, el NRMSE contra `chi_cosmos` en su máscara, medido sobre M·χ.
 - **Cómo se escribe** (`valida_qsm`): tras una evaluación sin fallo, si su NRMSE mínimo es el menor
   hasta ahora, con `guarda_pth` y una línea en el log; un mínimo NaN (ninguna iteración finita) no
   lo escribe. Lleva lo de `best.pth` salvo el optimizer (es para usar; para seguir entrenando está
-  el estado) más `nrmse_min_pct`, `iter_min`, `nrmse_final_pct`, `iteraciones`, `motivo` y
-  `estabilidad` (None si no se midió o falló). Viaja en el estado como `mejor_qsm`, y al reanudar
-  se aparta o se repone como `best.pth` (DIRECTORIO DE SALIDA). Sin COSMOS no se busca, y el
-  arranque lo dice en una línea. Con `--guardar-cada` igual a `--eval-every` queda además un
-  `estado-<it>.pth` por evaluación, para elegir otro a mano; con la cadencia de la corrida larga,
-  4 de cada 5 evaluaciones QSM no dejan pesos (bitácora, «Abierto»).
+  el estado) más `target_std`, `nrmse_min_pct`, `iter_min`, `nrmse_final_pct`, `iteraciones`,
+  `motivo` y `estabilidad` (None si no se midió o falló). Viaja en el estado como `mejor_qsm`, y
+  al reanudar se aparta o se repone como `best.pth` (DIRECTORIO DE SALIDA). Sin COSMOS no se
+  busca, y el arranque lo dice en una línea. Con `--guardar-cada` igual a la cadencia de la evaluación QSM
+  (`--eval-qsm-cada`, o `--eval-every` si aquélla es 0) queda además un `estado-<it>.pth` por
+  evaluación, para elegir otro a mano o reevaluarlo a otros targets. Así van las corridas vigentes
+  (`--guardar-cada 496` y `--eval-every 496`) y la corrida larga del README (`--guardar-cada 500`
+  y `--eval-qsm-cada 500`).
 - **Ojo con `estado.json`:** `qsm_nrmse_mejor_pct` es el menor NRMSE final de todas
   (`resumen_qsm`); lo de `best_qsm.pth` está en `best_qsm` (`RESUMEN_BEST_QSM`). Con la parada de
   dos subidas suelen coincidir. Comparar sólo vale con los mismos COSMOS y `--qsm-max-iter`, que
@@ -672,6 +710,11 @@ suya, el NRMSE contra `chi_cosmos` en su máscara, medido sobre M·χ.
   elige el suyo. El punto de la estabilidad usa el primero. Existe porque con el target fijo en
   0.25 el QSM parecía empeorar al entrenar, y con el mejor de cada checkpoint mejora (bitácora,
   «RESULTADO del barrido 0.02 / 0.06 / 0.12»). Cuesta un ADMM más por target y sujeto.
+- **Sim2** (`--qsm-sim2`, `valida_sim2`): el mismo ADMM, a los mismos targets y con la misma
+  cadencia, sobre un segundo sujeto (`datasets/qsm_sim2`, que arma `datasets/prepara_sim2.py`).
+  Va a `qsm_sim2.jsonl`, al log y a W&B (`qsm_sim2/*`); elige su propio mejor target, no elige
+  checkpoints, no toca la meseta ni mide la estabilidad. Si el archivo no se puede leer, un AVISO
+  la apaga y el entrenamiento sigue; `--qsm-sim2 ''`, el default, la apaga sin aviso.
 - **Abierto:** una parada sin referencia para la red 3D está sin calibrar; se calibra con un grid
   después del entrenamiento (bitácora, «Abierto»).
 
@@ -751,7 +794,7 @@ y devuelve M·χ.
   2.5e-8 sobre un χ de 0.1. `test_k1_es_k3_con_el_mismo_denoiser` pide ≤ 1e-6·max|χ|. k = 3 es
   el pseudo-3D del autor (la red 2D en los tres ejes) y k = 1, la red 3D.
 - **`alpha` se fija en t = 0 con χ₀**, que sale sólo del término de datos (los `z_i` valen 0): no
-  depende de la red. En COSMOS da 4.8591, el mismo valor que los logs del autor.
+  depende de la red. En COSMOS, a target 0.06, da 4.8591, el mismo valor que los logs del autor.
 - **TOL y CORTE.** El update relativo, sobre el volumen entero, baja, toca un mínimo y vuelve a
   subir. El ADMM se da por convergido al bajar de TOL y corta en la primera iteración cuyo update
   *anterior* pasa de CORTE; el χ final es el de esa iteración. `TOL = 1.15` y `CORTE = 1.30` los
@@ -895,8 +938,8 @@ lo mismo que hace `entrena` en `train3d.py`:
 
 El bucle no tiene `break` ni chequeo de NaN: una corrida que estalla sigue hasta la última
 iteración, y sólo ahí se escribe `estado.json`. Si ese archivo falta, se cortó desde afuera. En qué
-se aparta `entrena` (parches 3D, micro-lote libre, lr por `lr_en`, cota absoluta escalada,
-reanudación y el corte de `--meseta`): «## train3d.py», BUCLE.
+se aparta `entrena` (parches 3D, micro-lote libre, lr por `lr_en`, disyuntor de razón 10 sin cota
+absoluta, reanudación y el corte de `--meseta`): «## train3d.py», BUCLE.
 
 ### CONTROLES APRENDIDOS
 

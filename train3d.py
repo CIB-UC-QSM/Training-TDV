@@ -3,10 +3,11 @@ Entrenamiento de TDV 3D sobre volúmenes T1 de LDM_100k: la receta de `train.py`
 
 Una iteración toma un lote de 32 parches de 48^3, cada uno con una de las 48 simetrías del cubo, y
 lo pasa en los micro-lotes que entran en la memoria (16 en 96 GiB): ruido gaussiano nuevo
-(sigma = 25) -> los S = 10 pasos del esquema desenrollado -> ||x_S - y||^2 -> backward -> el
-disyuntor decide si el lote se acepta -> Adam con el lr del calendario -> re-proyección. Cada
---eval-every valida el denoising y, con la cadencia de --eval-qsm-cada, pasa la red por el ADMM de
-QSM sobre COSMOS: ese NRMSE elige `best_qsm.pth` y, con --meseta, decide cuándo bajar el lr.
+(sigma = 25 o, con --sigma-max, uno por parche) -> los S = 10 pasos del esquema desenrollado ->
+||x_S - y||^2 -> backward -> el disyuntor decide si el lote se acepta -> Adam con el lr del
+calendario -> re-proyección. Cada --eval-every valida el denoising y, con la cadencia de
+--eval-qsm-cada, pasa la red por el ADMM de QSM sobre COSMOS a cada --qsm-target-std: el de menor
+NRMSE mínimo elige `best_qsm.pth` y, con --meseta, decide cuándo bajar el lr.
 
 Cómo leer este archivo: empieza por `main`, al final, que arma la corrida en pasos con nombre y
 llama a `entrena`, el bucle, y a `cierra`. Lo que se arma una vez va en `piezas`; las cuentas que
@@ -22,7 +23,8 @@ cada número, en docs/porque-del-codigo.md, «## train3d.py».
         --iterations 15000 --hitos 10000                             # rama: lr/2 desde la 10 001
     uv run train3d.py --out runs/tronco3d --reanudar runs/tronco3d/estado-020000.pth \\
         --hitos                                                      # sigue tras un corte
-    uv run train3d.py --out runs/ciego3d --sigma-max 55              # ruido ciego U(0, 55)
+    uv run train3d.py --out runs/ciego3d --sigma-min 0.81 --sigma-max 55 --sigma-log \\
+        --epocas --mascara-cerebro                                   # la receta ciega vigente
     uv run train3d.py --out runs/cerebro3d --hitos --mascara-cerebro # cubos 100 % cerebro
     uv run train3d.py --out runs/tronco3d --hitos --eval-qsm-cada 10000   # QSM cada 10 000
     uv run train3d.py --out runs/tronco3d --hitos --meseta 2         # lr/2 si el QSM se estanca
@@ -138,9 +140,6 @@ QSM_ARCHIVOS = ("params.mat", "chi_cosmos.mat")   # los que lee `carga_cosmos`
 QSM_ORIGEN = "../tdv/data_mat"                    # de dónde se copian: el repo del pipeline QSM
 # Sim2, el segundo sujeto de la evaluación QSM (`--qsm-sim2`): lo arma `datasets/prepara_sim2.py`.
 QSM_SIM2 = "datasets/qsm_sim2"
-# --val-snr: SNR = pico/σ, con el pico = DATA_RANGE = 1, el percentil 99.5 al que se normaliza
-# cada T1: σ = 1/SNR. Es la convención del PSNR (PSNR de entrada = 20·log10 SNR), y σ = 25/255, la
-# de la validación, es SNR 10.2 (AGENTS.md, «Entrenamiento 3D»).
 # Lo de `best_qsm.pth` que va a `estado.json`: la iteración, lo que lo eligió (el NRMSE mínimo del
 # ADMM) y lo que se registra de diagnóstico.
 RESUMEN_BEST_QSM = ("iteration", "target_std", "nrmse_min_pct", "nrmse_final_pct",
@@ -159,13 +158,8 @@ SEMILLA_VAL = 1234
 MESETA_MITADES = 5
 
 # --- REANUDACIÓN -----------------------------------------------------------------------------
-# LIBRES: las banderas que se pueden cambiar al reanudar. Ninguna toca la aritmética (las del
-# seguimiento, la evaluación QSM y la estabilidad, con test), salvo `micro_lote` y `vram_gb`, que
-# lo elige con `auto`: cambian el orden de suma del gradiente y, a veces, el ruido o la
-# amplificación (el AVISO de `lee_estado`), no la receta. Se permiten para seguir en otra tarjeta,
-# y desde ahí la corrida no es bit a bit. `guard`, `guard_abs` y `guard_respaldo` tampoco la tocan
-# mientras el disyuntor no rechaza, y se permiten para reanudar protegida una corrida lanzada sin
-# él. CALENDARIO: lo que una rama (otro `--out`) puede cambiar además.
+# LIBRES: lo que se puede cambiar al reanudar; CALENDARIO: lo que una rama (otro `--out`) cambia
+# además (docs/porque-del-codigo.md, REANUDACIÓN).
 LIBRES = frozenset({"out", "reanudar", "iterations", "log_every", "eval_every", "guardar_cada",
                     "workers", "micro_lote", "vram_gb", "sonda_vram", "seguimiento",
                     "wandb_proyecto", "qsm_datos", "eval_qsm_cada", "qsm_max_iter",
@@ -311,6 +305,7 @@ def paso_meseta(meseta: dict, nrmse: float, it: int, paciencia: int, mitades: in
 # --- ARCHIVOS --------------------------------------------------------------------------------
 
 def lee_lista(path) -> list[str]:
+    """Las líneas no vacías de una lista de sujetos."""
     return [l.strip() for l in Path(path).read_text().splitlines() if l.strip()]
 
 
@@ -435,6 +430,7 @@ def metricas_qsm(r: dict, datos: dict) -> dict:
 
 
 def linea_metricas(m: dict) -> str:
+    """El sufijo del log con `metricas_qsm`; '' sin ellas."""
     if not m:
         return ""
     return (f" | HFEN {m['hfen_pct']:.2f} %, XSIM {m['xsim']:.4f}, residuo {m['residuo_dato_pct']:.2f}"
@@ -598,6 +594,7 @@ def claves_estabilidad(r: dict) -> dict:
 
 
 def linea_estabilidad(punto: str, r: dict) -> str:
+    """La línea del log de una medición de estabilidad."""
     if "fallo" in r:
         return f"    estabilidad {punto} FALLÓ ({r['fallo']}); el entrenamiento sigue"
     return (f"    estabilidad {punto}: (T/S)·λ_max = {r['paso']:.4f}"
@@ -709,6 +706,7 @@ def sonda_vram(model, args, mode: dict, presupuesto: float, out: Path) -> None:
 # --- BANDERAS --------------------------------------------------------------------------------
 
 def opciones() -> argparse.ArgumentParser:
+    """Las banderas de train3d.py; las principales, también en el README."""
     p = argparse.ArgumentParser(description=__doc__.strip().split("\n")[0])
     p.add_argument("--out", required=True, help="directorio de salida")
     # `referencia` cuesta ~21x más en 3D y a 48^3 x 4 no entra: sirve para tests cortos.
@@ -764,7 +762,7 @@ def opciones() -> argparse.ArgumentParser:
                         "--lote parches, de los primeros --lote volúmenes de --train-list) con el "
                         "mismo ruido, sin las cotas del disyuntor; la validación agrega el PSNR de "
                         "ese lote")
-    # Candidatas de la fase 2, apagadas: con los defaults la corrida es la receta.
+    # Ruido ciego y aumentos, apagados por defecto: con los defaults la corrida es la receta.
     p.add_argument("--sigma-max", type=float, default=0.0,
                    help="> 0 sortea sigma ~ U(--sigma-min, --sigma-max) por parche (ruido ciego)")
     p.add_argument("--sigma-min", type=float, default=SIGMA_MIN)
@@ -819,6 +817,7 @@ def opciones() -> argparse.ArgumentParser:
                    help=f"carpeta con {SIM2_ARCHIVO} (`datasets/prepara_sim2.py`, por defecto en "
                         f"{QSM_SIM2}): la evaluación QSM corre también en Sim2, a W&B como "
                         "qsm_sim2/*, sin elegir checkpoints. '' la apaga")
+    # SNR = pico/σ con pico 1 (percentil 99.5 de cada T1): σ = 25/255 es SNR 10.2 (AGENTS.md).
     p.add_argument("--val-snr", type=float, nargs="*", default=[],
                    help="SNR (pico/σ = 1/σ) donde se valida el denoising además de σ = --sigma, "
                         "a W&B como val_snr<SNR>/*, sin elegir checkpoints; p. ej. 25 50 100")
@@ -845,10 +844,8 @@ def opciones() -> argparse.ArgumentParser:
 
 
 # --- LO QUE ARMA `main` Y LO QUE CAMBIA EN EL BUCLE ------------------------------------------
-# Sin clases (AGENTS.md, «El código»): `piezas` y `corrida` son `SimpleNamespace`, como `args`.
-# `piezas` lo arma `main` una vez: las banderas, el modelo y Adam, los datos y dónde se escribe.
-# Los pesos, Adam y el generador del ruido cambian por dentro y viajan en el estado. `corrida`
-# son las cuentas que el bucle va cambiando.
+# Sin clases (AGENTS.md, «El código»): `piezas` (lo que arma `main`) y `corrida` (lo que el bucle
+# cambia y viaja en el estado) son `SimpleNamespace`.
 
 def corrida_nueva(iteraciones: int) -> SimpleNamespace:
     """Las cuentas de una corrida que empieza. `guarda_estado` las escribe en `estado-<it>.pth` y
@@ -990,8 +987,8 @@ def lee_estado(parser: argparse.ArgumentParser, args: argparse.Namespace,
     rama = Path(args.reanudar).resolve().parent != out.resolve()
     libres = LIBRES | (CALENDARIO if rama else set())
     ahora = vars(args)
-    # Una bandera de receta posterior al estado vale ahí su default: los de runs/humo3d no tienen
-    # `mascara_cerebro`, y sin esto no se podían reanudar.
+    # Una bandera de receta posterior al estado vale ahí su default: un estado escrito sin
+    # `mascara_cerebro` se reanuda como si fuera False.
     distintas = sorted(k for k in estado["args"].keys() | ahora.keys()
                        if k not in libres
                        and estado["args"].get(k, parser.get_default(k)) != ahora.get(k))
@@ -1124,8 +1121,7 @@ def arma_entrenamiento(parser: argparse.ArgumentParser, args: argparse.Namespace
               f"{args.iterations} iteraciones", flush=True)
         return train_set, lotes_por_epoca(train_set, args.lote, args.workers, device), None
     # Un lote entero por pedido; los micro-lotes se cortan en el bucle. Con prefetch 2 y los dos
-    # workers quedan en vuelo 2 x 2 x 32 parches, los mismos que con el loader de antes, que daba
-    # micro-lotes de 16 con prefetch 4 (4 x 2 x 16).
+    # workers quedan en vuelo 2 x 2 x 32 parches.
     persistentes = ({"persistent_workers": True, "prefetch_factor": 2} if args.workers else {})
     loader = DataLoader(train_set, batch_size=args.lote, shuffle=False, drop_last=True,
                         num_workers=args.workers, pin_memory=(device.type == "cuda"),
@@ -1463,8 +1459,8 @@ def valida_denoising(piezas, corrida, it: int, perdida: torch.Tensor):
           f"{entrada['nrmse_pct_tejido']:.2f} % ({report['num_volumenes']} vols)"
           + (f" | lote fijo {entrada['psnr_lote']:.3f} dB" if args.sobreajuste else "")
           + ("  *mejor*" if psnr_criterio == corrida.best_psnr else ""), flush=True)
-    # Un estallido hunde el PSNR decenas de dB (`ciego-epocas-l32`: −32 dB en su primera
-    # validación). Peor que la entrada ruidosa lo avisa aunque sea la primera.
+    # Un estallido hunde el PSNR decenas de dB (a −32 dB en la primera validación de una corrida
+    # ciega; bitácora, 2026-10-22). Peor que la entrada ruidosa lo avisa aunque sea la primera.
     if psnr_criterio < psnr_ruidosa:
         alerta(piezas, "la red empeora la entrada", f"PSNR {psnr_criterio:.2f} dB en la it {it}, "
                f"contra {psnr_ruidosa:.2f} dB de la ruidosa")
@@ -1842,33 +1838,5 @@ def main(argv: list[str] | None = None) -> None:
 if __name__ == "__main__":
     main()
 
-'''
-# --- BUCLE -----------------------------------------------------------------------------------
-# El de `train.py`, repartido en funciones con nombre: `main` arma `piezas` y `corrida` y llama a
-# `entrena`, que en cada iteración
-#   - fija el lr con `lr_en`;
-#   - hace el forward y el backward del lote, micro-lote por micro-lote (`gradiente_del_lote`);
-#   - deja que `rechaza_lote` decida si hay paso de Adam, re-proyecta y, con `aplica_disyuntor`,
-#     rebobina o refresca el respaldo;
-#   - escribe una fila de traza y, cada --log-every, la línea de log (`registra_progreso`); cada
-#     --eval-every valida (`valida`: denoising y, con la cadencia de --eval-qsm-cada, estabilidad
-#     y QSM), y cada --guardar-cada escribe el estado (`guarda_estado`).
-# Al final, `cierra` escribe `estado.json`. Respecto de `train.py`, cuatro diferencias:
-#   1. Parches de PATCH_SIZE^3 de `ddr.data3d.PatchDataset3D`, con al menos 35 % de tejido (o,
-#      con --mascara-cerebro, enteros dentro del cerebro) y una de las 48 simetrías del cubo, en
-#      ceil(--lote / --micro-lote) micro-lotes casi iguales; el micro-lote lo elige la memoria
-#      (MEMORIA y MICRO-LOTES).
-#   2. El lr no lo lleva un scheduler: `lr_en(it, hitos)` lo fija al principio de cada iteración,
-#      con los hitos de --meseta sumados (MESETA).
-#   3. La cota absoluta del disyuntor escala con el parche (`cota_absoluta`).
-#   4. `--guardar-cada` escribe el estado completo, y `--reanudar` sigue desde ahí bit a bit (con
-#      el mismo micro-lote).
-# Y tres agregados que no tocan la aritmética (test): el seguimiento en W&B (SEGUIMIENTO), la
-# evaluación QSM en las validaciones (EVALUACIÓN QSM) y el número de estabilidad (ESTABILIDAD).
-# Como en `train.py`, el bucle no corta ni por NaN, ni por rechazos, ni por un fallo de W&B, de la
-# evaluación QSM o de la estabilidad. El único corte es el de --meseta, apagada por defecto, y
-# queda escrito en `estado.json` (MESETA). Una corrida terminó si su `estado.json` dice
-# `"terminada": true`. --sobreajuste cambia los datos para la prueba de sobreajuste (SOBREAJUSTE).
-# Las secciones entre paréntesis son las de «## train3d.py» en docs/porque-del-codigo.md, donde
-# está el resto de las notas de este archivo.
-'''
+# El recorrido de `main` y `entrena`, en qué se aparta de `train.py` y el resto de las notas de
+# este archivo: docs/porque-del-codigo.md, «## train3d.py».

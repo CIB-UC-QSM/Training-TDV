@@ -76,8 +76,9 @@ def evaluate_denoising3d(model, dataset, sigma=25.0, device="cpu", seed=1234, da
     cerebro (`*_cerebro`); sin él, esas claves no están.
 
     `amp` es el dtype de autocast del modo de la corrida (`MODES[modo]["amp"]`): se evalúa como se
-    entrena. Sin reescalado de sigma: en 3D se evalúa siempre al sigma del entrenamiento. Con
-    `devuelve_primero`, `primero` lleva limpia, ruidosa y salida del volumen 0, para la lámina.
+    entrena. Sin reescalado de sigma: se evalúa al `sigma` que se pasa (en `train3d.py`, el de
+    --sigma y los de --val-snr). Con `devuelve_primero`, `primero` lleva limpia, ruidosa y salida
+    del volumen 0, para la lámina.
     """
     tipo = torch.device(device).type
     cerebro = getattr(dataset, "cerebro", None)

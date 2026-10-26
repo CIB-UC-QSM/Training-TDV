@@ -9,18 +9,33 @@ que de ella sigue valiendo está aquí. Cada punto lleva entre paréntesis la fe
 se decidió. El porqué de cada constante del código está en
 [`porque-del-codigo.md`](porque-del-codigo.md).
 
+**SNR = pico/σ, con el pico = 1** (el percentil 99.5 de cada T1) desde el 2026-10-23. Lo anterior
+usa la media del cerebro, 0.316/σ: SNR_pico = SNR_media/0.316 (3.2 → 10.2, 25 → 79, 50 → 158,
+100 → 316).
+
 ---
 
 ## Estado
 
+- **La red es 3D real:** `VNet3D`, con convoluciones 3D (`ddr/conv3d.py`, `ddr/tdv3d.py`),
+  entrenada con `train3d.py` sobre T1 3D. La evaluación QSM es el ADMM de
+  `../tdv/wTDV_QSM_torch_3d.py` con k = 1: la red 3D sobre el volumen entero. No es el pseudo-3D
+  del autor (k = 3, la red 2D en los tres ejes, sólo para reproducir su 25.94 %) ni el código de
+  `../QSM-TDV`, que reconstruye con pasos de gradiente, sin ADMM («Hacia QSM-TDV»).
 - **`train3d.py` está listo para la corrida larga**, que el autor lanza en la RTX PRO 6000
   Blackwell Max-Q de 96 GB, sin probar allí. Qué copiar, cómo comprobar y el comando: README,
   «Llevar el entrenamiento 3D a otra máquina». Lo fijado y por qué: «La corrida larga», abajo.
-- **Lo más largo que corrió en 3D** son 2 500 iteraciones (`prep3d-g10-s2-2500`). Del 3D hay sólo
-  sondas cortas en la 5070 Ti local: lo que dejaron está en «Lo que mostraron las sondas» y en
-  «El disyuntor en 3D».
+- **Lo más largo en 3D:** `ciego-epocas-l32-10k`, 10 000 iteraciones en la 5070 Ti local
+  (terminada el 24-10; W&B `kxein1yw`, consolidada): ruido ciego log-uniforme, σ ∈ [0.81, 55]/255
+  por parche, épocas, lote 32 y `--mascara-cerebro`. **En vuelo:** su rama a 20 000,
+  `ciego-epocas-l32-20k`, con lr constante (desde el 25-10 a las 18:07; W&B `4027tbsv`). Lo que
+  dejaron las sondas cortas: «Lo que mostraron las sondas» y «El disyuntor en 3D».
 - **Para QSM se usa `best_qsm.pth`**, no `best.pth`. En `../QSM-TDV` no carga tal cual: lo
-  convierte `a_qsm_tdv.py`, y falta la escala de χ («Hacia QSM-TDV»).
+  convierte `a_qsm_tdv.py`, inexacto junto al borde, y falta la escala de χ («Hacia QSM-TDV»).
+  El `best_qsm.pth` de `ciego-epocas-l32-10k` es el de la 1 488, elegido a target 0.25: el
+  checkpoint de la 10 000 le gana a todos los targets de 0.02 a 0.06 (3.7–7.2 pp en COSMOS;
+  «Grid de target…», 25-10), así que ese archivo no sirve. El de la rama a 20 000 ya se elige al
+  mejor target.
 - **La fase 2D está cerrada**: `t8delta-100k-s1` llegó a 31.547 dB en CBSD68 (σ = 25) contra
   31.53 publicado. Lo que dejó para el 3D: «Lo que dejó el 2D», al final.
 
@@ -28,39 +43,49 @@ se decidió. El porqué de cada constante del código está en
 
 - **Antes de lanzar, en la Blackwell:** la sonda (micro-lote 16 contra 8), la prueba de 40
   iteraciones del README (paso 5) con las banderas finales, y el s/it y el costo de una evaluación.
-- **Si la tasa de escalones de ‖g‖** con micro-lote 16 y la lista de 2 000 es la de las sondas
-  (lista de 1 000), con qué frecuencia hay escalones sobre 10× en 10⁵ iteraciones, y si aceptar los
-  de 5–10× le cuesta algo al prior.
-- **Las pendientes del PSNR y del NRMSE después de la 10 000** (la extrapolación logarítmica del
-  PSNR, optimista, da 3.8σ por 1 000 iteraciones en la 10 000 y 1.0 en la 40 000), cuánto se
-  correlacionan sus ruidos, y si hay pozos del NRMSE más largos que la paciencia.
+- **La tasa de escalones de ‖g‖ con micro-lote 16:** con qué frecuencia hay escalones sobre 10×
+  en 10⁵ iteraciones, y si aceptar los de 5–10× le cuesta algo al prior. En `ciego-epocas-l32-10k`
+  (ciega con épocas, lote 32, lista de 1 000; `--guard 10` desde la 4 960): una racha de 25 que
+  rebobinó en 10 000 iteraciones (la 9 768), sin `TRABADA`.
+- **Después de la 10 000:** en la 10 000 de `ciego-epocas-l32-10k`, PSNR en el cerebro 33.787 dB,
+  el mejor de la corrida; el QSM al mejor target, casi plano desde la 8 432 (varía ≤ 0.3 pp;
+  COSMOS a 0.02, 26.73 %; Sim2 a 0.06, 35.49 %). Hasta la 20 000 lo mide la rama, con lr
+  constante: leerla contra su pre-registro («La rama a 20 000»). Sin medir: cuánto se
+  correlacionan los ruidos del PSNR y del NRMSE, y si hay pozos del NRMSE más largos que la
+  paciencia.
 - **Si partir el lr mejora el NRMSE QSM:** ninguna serie QSM cruzó una mitad.
 - **Si las trayectorias del ADMM de la red larga oscilan** como la de `sobreajuste-3d-control`: la
-  parada de dos subidas le restaría ~1 pp a ese checkpoint.
+  parada de dos subidas le restaría ~1 pp a ese checkpoint. Con la ciega, `best_qsm` a 0.15 oscila
+  (en Sim2, el NRMSE en diente de sierra), y ninguna trayectoria llega a un punto fijo en 100
+  iteraciones («Los saltos finales», 23-10).
 - **Por qué la red hace crecer el error en el cono del dipolo.** Lo agranda la control a
   target_std 0.06; lo achican la misma red a 0.25–0.35, la ciega a 0.06 y `prep3d-g10-s2-2500` a
   0.06. No lo explican el piso sin datos ni las 20 pasadas aisladas (las dos dan < 1 en todo); la
   medición que separa contraste de amplitud del error está diseñada y sin correr («Etapa 2»,
   pendientes). Si sigue pasando a 10 000 o más iteraciones, sin medir; y qué le hace al NRMSE que
   la red no vea el borde del cerebro.
-- **σ fijo o ciega para la corrida larga, por decidir:** a 1 500 iteraciones, en COSMOS, la ciega
-  no diverge a 0.06 y queda 1.7 pp bajo la control a 0.25, sin costo de PSNR a σ = 25 (+0.37 dB);
-  una corrida por brazo, un sujeto, y su λ quedó en 0 («Etapa 2», C) (2026-10-21). En denoising,
-  la ciega log-uniforme (`ciego-log-l32`, 2 250 it) deja 2.4–3.6 pp menos NRMSE que la de σ fijo
-  de SNR 25 a 100 y 1.65 pp más a SNR 3.2, y desde SNR 40 todavía empeora la entrada («Ruido ciego
-  log-uniforme», resultado) (2026-10-22).
-- **Pesos de cada evaluación QSM:** con QSM cada 500 y estados cada 2 500, 4 de cada 5
-  evaluaciones QSM no dejan pesos. Si `best_qsm.pth` quedara mal elegido, no hay otro para elegir a
-  mano (auditoría, 2026-10-16). La propuesta de `--guardar-cada 500` lo cierra, si se aprueba
-  (2026-10-21).
+- **Ruido de la corrida larga:** el comando del README se alineó el 25-10 con las corridas
+  vigentes, ciega log-uniforme σ ∈ [0.81, 55]/255 con `--epocas`. Si el autor prefiere σ = 25
+  fijo, se cambia. Lo medido: a 1 500 iteraciones, en COSMOS, la ciega no diverge a 0.06 y queda
+  1.7 pp bajo la control a 0.25, sin costo de PSNR a σ = 25 (+0.37 dB); una corrida por brazo, un
+  sujeto, y su λ quedó en 0 («Etapa 2», C) (2026-10-21). En denoising, la ciega (`ciego-log-l32`,
+  2 250 it) deja 2.4–3.6 pp menos NRMSE que la de σ fijo de SNR de pico 79 a 316, 1.65 pp más a
+  10.2, y desde 126 empeora la entrada («Ruido ciego log-uniforme», resultado) (2026-10-22). Con la
+  ciega, el QSM al mejor target mejora con el entrenamiento: en COSMOS a 0.02, de 35.1 % en la 496
+  a 26.7 % en la 10 000 («curvas por target», 23-10).
 - **Una falla en la validación de denoising corta la corrida:** `valida` llama a
   `valida_denoising` sin `try`, a diferencia de la estabilidad y el ADMM (auditoría, 2026-10-16;
   verificado el 2026-10-20).
-- **El α de la evaluación QSM, decidido (el autor, 2026-10-25):** la evaluación corre a varios
-  targets y cuenta el de menor NRMSE; para la rama a 20 000, 0.15, 0.02 y 0.05, con μ = 0.008
-  («Grid de target 0.02–0.06, μ y ADMM en dos rondas»). La regla de target_std (la std de χ₀)
-  no se cambia: ninguna variante robusta separa a los sujetos («La distribución de χ₀»), ni una
-  α por el ruido estimado de χ₀ («¿α sin GT?»).
+- **α sin GT:** la evaluación elige el target con la GT (α oráculo). No sirven una target_std
+  robusta («La distribución de χ₀»), α por el ruido estimado de χ₀ (MAD de wavelets) ni el
+  principio de discrepancia («¿α sin GT?»). Propuesta, sin correr: aumento de amplitud en el
+  entrenamiento («¿α sin GT?», 23-10).
+- **`--sigma-max` 85/255** en la próxima corrida ciega, para que la primera iteración del ADMM
+  quede en el ruido entrenado hasta target 0.22 en COSMOS y 0.19 en Sim2: propuesta, sin correr
+  («Barrido de target y ADMM a 100 con la ciega», 23-10).
+- **El pseudo-3D oficial a target_std 0.06, 0.25 y 0.35 en COSMOS**, en `../tdv`: si α alto
+  también mejora la oficial, es del ADMM y del cono; si no, de esta red. Lo decide el autor
+  («Etapa 2», pendientes).
 - **Después del entrenamiento:** una parada del ADMM sin referencia (TOL/CORTE con un grid, o
   otra), con las trayectorias de `qsm.jsonl`; la escala de χ en QSM-TDV; `λ` en QSM, sin medir.
 - **Si `wandb` queda como dependencia obligatoria** (hoy lo es en `pyproject.toml`) o pasa a extra.
@@ -79,29 +104,36 @@ se decidió. El porqué de cada constante del código está en
 - **Micro-lote 16 contra 8, sin medir:** en la 5070 Ti, doblar el micro-lote bajaba el costo por
   parche 2–6 %. La sonda lo mide; si 16 no baja claramente el `s_por_parche` de 8, va
   `--micro-lote 8`. Sin `--checkpointing`: cuesta +22–27 % de tiempo (2026-10-15, 2026-10-16).
-- **Receta:** `T_init = 8·δ_Adam` (0.1012, el default); σ = 25 fijo; sin `--aug-ganancia` (no
+- **Receta:** `T_init = 8·δ_Adam` (0.1012, el default); ruido ciego log-uniforme por parche,
+  σ ∈ [0.81, 55]/255 (`--sigma-min 0.81 --sigma-max 55 --sigma-log`), el de las corridas vigentes
+  (2026-10-25; si el autor prefiere σ = 25 fijo, se cambia: «Abierto»); sin `--aug-ganancia` (no
   arregla la estabilidad en COSMOS: «Lo que dejó `ventana-3d-12h`»); lr 4e-4 constante hasta que
   decida la meseta (2026-10-15, 2026-10-18).
-- **Datos:** 2 000 cerebros (`lista_train_2000.txt`). Por paso, 32 cubos de 48³ independientes,
-  cada uno de un volumen al azar, en una posición y con una de las 48 orientaciones del cubo. En
-  100 000 iteraciones son 1 600 cubos por cerebro (2026-10-15).
+- **Datos:** 1 000 cerebros (`lista_train_1000.txt`), con `--epocas`: cada época son 31
+  iteraciones de 32 cubos de 48³, 992 cubos de volúmenes distintos en el orden de una permutación
+  (sin reemplazo), cada uno en una posición y con una de las 48 orientaciones del cubo. En 100 000
+  iteraciones son ~3 200 cubos por cerebro (2026-10-25).
 - **`--mascara-cerebro`**, en el comando: cubos enteros dentro del cerebro. Al arrancar lee las
   máscaras a 0.06 s por volumen (~2 min) y las esquinas ocupan ~0.4 GB de RAM; exige las máscaras
   de los 12 volúmenes de validación. El precio es de receta: a 48³ los cubos cubren el 66 % del
   cerebro y el 18.5 % de la franja cortical (≤ 6 mm del borde); la red no ve el borde y el ADMM sí
   se lo pasa (2026-10-15, 2026-10-18).
-- **Comando:** README, paso 6: `--iterations 100000 --hitos --meseta 10 --meseta-desde 10000
-  --meseta-psnr --guard 10 --mascara-cerebro --seguimiento online --eval-every 100
-  --eval-qsm-cada 500 --guardar-cada 2500`, como unidad `tdv-3d-largo` con `.venv/bin/python` y
-  log en `runs/3d-largo.log` (2026-10-19).
+- **Comando:** README, paso 6, uno solo: `--iterations 100000 --hitos --meseta 10 --meseta-desde
+  10000 --meseta-psnr --guard 10 --mascara-cerebro --epocas --train-list
+  datasets/ldm100k3d/lista_train_1000.txt --sigma-min 0.81 --sigma-max 55 --sigma-log
+  --seguimiento online --eval-every 100 --eval-qsm-cada 500 --guardar-cada 500 --qsm-target-std
+  0.15 0.02 0.05 --qsm-sim2 datasets/qsm_sim2 --val-snr 25 50 100`, como unidad `tdv-3d-largo`
+  con `.venv/bin/python` y log en `runs/3d-largo.log`. Reanudar es el mismo comando más
+  `--reanudar` (2026-10-19, 2026-10-25).
 - **Quién decidió qué:** el ADMM de 25 con parada tras dos subidas, la meseta desde la 10 000 con
   NRMSE y PSNR, `--guard 10` y el ~26 % como referencia, el autor (2026-10-19). La cadencia (PSNR
   cada 100, QSM cada 500) y la paciencia (`--meseta 10` = 5 000 iteraciones) son una recomendación
   sobre su propuesta (QSM cada 100 con `--meseta 10` = 1 000): las fija él al lanzar. Para QSM cada
   100 con la misma paciencia: `--eval-every 100 --meseta 50` (2026-10-19).
 - **Seguimiento:** W&B, proyecto `training-tdv3d`, público (2026-10-18).
-- **Estados:** uno cada 2 500 iteraciones (~47 MB cada uno). `config.json` guarda el commit del
-  código, también sin W&B (2026-10-18).
+- **Estados:** uno cada 500 iteraciones (~47 MB cada uno, ~9.4 GB en 100 000), para reevaluar
+  después cada checkpoint a otros targets. `config.json` guarda el commit del código, también sin
+  W&B (2026-10-18, 2026-10-25).
 
 ### La meseta
 
@@ -109,9 +141,10 @@ se decidió. El porqué de cada constante del código está en
   `--meseta N`, si en N evaluaciones QSM seguidas no hay un mejor nuevo, lr/2 desde la iteración
   siguiente, hasta `--meseta-mitades` (5); agotadas, la meseta siguiente corta la corrida, y
   `estado.json` lleva `corte` con motivo, iteración, mitades e iteraciones hechas (2026-10-16).
-- **Mira `nrmse_min_pct`, no el final.** Una evaluación con el mínimo no finito no cuenta; una que
-  levanta excepción no llega a la meseta. Si fallan todas, el lr queda en 4e-4 hasta el techo: lo
-  avisan «qsm FALLÓ» en el log y `qsm/fallo` = 1 (2026-10-18).
+- **Mira `nrmse_min_pct`, no el final;** con varios `--qsm-target-std`, el del target de menor
+  NRMSE mínimo de esa evaluación (`qsm/mejor_target`). Una evaluación con el mínimo no finito no
+  cuenta; una que levanta excepción no llega a la meseta. Si fallan todas, el lr queda en 4e-4
+  hasta el techo: lo avisan «qsm FALLÓ» en el log y `qsm/fallo` = 1 (2026-10-18, 2026-10-25).
 - **`--meseta-psnr`:** cada métrica lleva su mejor y su cuenta; la mitad pide que las dos lleven N
   sin mejorar, y las dos vuelven a cero al partir. Usa `val/psnr_cerebro` (2026-10-19).
 - **`--meseta-desde 10000`:** antes no cuenta nada, y la primera evaluación desde ahí fija los dos
@@ -143,13 +176,21 @@ se decidió. El porqué de cada constante del código está en
 
 ### La evaluación QSM
 
-- **El ADMM:** techo de 25 iteraciones (`QSM_MAX_ITER`, `train3d.py:129`; el `MAX_ITER` de
+- **Targets** (el autor, 2026-10-25): `--qsm-target-std 0.15 0.02 0.05`, cada uno en W&B como
+  `qsm_t<target>/*` (0.15 → `qsm_t015`); `qsm/*` lleva el de menor NRMSE mínimo, con
+  `qsm/mejor_target`, y Sim2 igual (`qsm_sim2/*`). μ = 0.008 y μ₂ = 1, fijos; α = target_std /
+  std(χ₀ en la máscara), fijo desde t = 0. El mejor depende del sujeto: 0.02 en COSMOS y
+  0.05–0.055 en Sim2 («Grid de target 0.02–0.06, μ y ADMM en dos rondas»). La regla de target_std
+  (la std de χ₀) no se cambia: ninguna variante robusta separa a los sujetos («La distribución de
+  χ₀»), ni un α por el ruido estimado de χ₀ («¿α sin GT?»).
+- **El ADMM:** techo de 25 iteraciones (`QSM_MAX_ITER`, `train3d.py:134`; el `MAX_ITER` de
   `ddr/qsm3d.py` sigue siendo el protocolo del autor), sin corte por TOL/CORTE (`tol` = −inf) y
   parando si el NRMSE sube dos iteraciones seguidas (`QSM_SUBIDAS = 2`, motivo `empeora`). Pare
   como pare, devuelve el χ de menor NRMSE visto (2026-10-19).
 - **En `qsm.jsonl`**, `nrmse_final_pct` y `nrmse_min_pct` son el mismo número salvo un ADMM no
   finito, y quedan la trayectoria del NRMSE y del update de cada iteración, para calibrar después
-  una parada (2026-10-19).
+  una parada (2026-10-19). Con varios targets, una fila por evaluación, la del target de menor
+  NRMSE mínimo, con cada uno en `por_target` (2026-10-25).
 - **Por qué 25.** Sobre 31 trayectorias 2D y pseudo-3D de 25 o más iteraciones, la correlación de
   Spearman del NRMSE en t contra el final da +0.07 en t = 1, +0.82 en t = 2, +0.93 en t = 10 y
   +0.98 en t = 24; en t = 24 queda una mediana de 0.12 pp sobre el mínimo. Con un par de
@@ -172,13 +213,17 @@ se decidió. El porqué de cada constante del código está en
 - **Costo** (5070 Ti, `rapido`): entrenamiento 8.772 s/it; una evaluación, 22.6 s de validación,
   61.9 s de estabilidad (dos puntos) y 3.413 s por iteración de ADMM (85 s las 25). QSM y
   estabilidad cada 100 suman 19.4 % (~47 h en 100 000); PSNR cada 100 con QSM cada 500, 5.9 %;
-  todo cada 500, 3.9 %. En la Blackwell no está medido (2026-10-19).
+  todo cada 500, 3.9 %. En la Blackwell no está medido (2026-10-19). Con tres targets en COSMOS
+  y Sim2, el ADMM suma 134–159 s en COSMOS y 340–363 s en Sim2 por evaluación
+  (`ciego-epocas-l32-20k`, `segundos` de `qsm.jsonl` y `qsm_sim2.jsonl`, sus dos primeras): ~8
+  min, ~11 % sobre el entrenamiento con QSM cada 500, por cuenta (2026-10-25).
 
 ### Qué checkpoint va a dónde
 
-- **`best_qsm.pth`, a QSM:** la evaluación de menor `nrmse_min_pct` entre todas, incluidas las de
-  antes de la 10 000. El final, las iteraciones, el motivo y la estabilidad se guardan y no eligen.
-  Con ~200 evaluaciones es optimista: COSMOS lo elige y lo mide (2026-10-18, 2026-10-19).
+- **`best_qsm.pth`, a QSM:** la evaluación de menor `nrmse_min_pct` entre todas y entre sus
+  targets (el mejor de cada evaluación, `qsm/mejor_target`), incluidas las de antes de la 10 000.
+  El final, las iteraciones, el motivo, el target y la estabilidad se guardan y no eligen. Con
+  ~200 evaluaciones es optimista: COSMOS lo elige y lo mide (2026-10-18, 2026-10-19, 2026-10-25).
 - **No por la estabilidad:** estable no es convergente (en `v12-control`, estabilidad 1.54 y ADMM
   en 144 % a las 100; en 2D, `ciego2d-35k` converge con 2.14). Y exigir que el ADMM cortara por
   TOL/CORTE podía dejar `best_qsm.pth` sin escribir: esos umbrales dependen de cada red (el grid de
@@ -194,14 +239,18 @@ se decidió. El porqué de cada constante del código está en
 
 ## El disyuntor en 3D
 
-- **Cómo funciona aquí.** Rechaza el lote si ‖g‖ no es finita, supera la cota absoluta o supera
-  `--guard` veces la mediana de las últimas 100 normas aceptadas; 25 rechazos seguidos
-  (`GUARD_SEGUIDOS`) rebobinan al último respaldo (pesos, Adam por copia y ventana; el lr no viaja).
-  El respaldo se refresca tras 250 iteraciones sanas: hasta la ~253 el único es el de la it 3, y un
-  rebobinado ahí vuelve al arranque. Un rechazo no da el paso: una racha evalúa lotes nuevos con los
-  mismos pesos, así que el nivel de ‖g‖ es del estado, no de un lote (2026-10-08, 2026-10-18).
-- **`--guard 10`**, no está en `LIBRES` (`train3d.py:158`): una corrida lanzada con 5 se empieza
-  de cero (2026-10-19).
+- **Cómo funciona aquí.** Rechaza el lote si ‖g‖ no es finita o supera `--guard` (10) veces la
+  mediana de las últimas 100 normas aceptadas; sin cota absoluta (`--guard-abs inf`). 25 rechazos
+  seguidos (`GUARD_SEGUIDOS`) rebobinan al último respaldo (pesos, Adam por copia y ventana; el lr
+  no viaja). El primer respaldo se toma tras 3 iteraciones limpias; después se refresca cada 50
+  iteraciones sanas (`--guard-respaldo`) y sólo con el relativo armado: antes, el único es el de
+  la it 3. Dos rebobinados seguidos al mismo respaldo son una corrida `TRABADA`, que se avisa
+  (log y alerta de W&B) y no se corta. Un rechazo no da el paso: una racha evalúa lotes nuevos con
+  los mismos pesos, así que el nivel de ‖g‖ es del estado, no de un lote (2026-10-08, 2026-10-18,
+  2026-10-23).
+- **`--guard 10` es el default en 3D, y `--guard`, `--guard-abs` y `--guard-respaldo` están en
+  `LIBRES`** (`train3d.py:169-173`): una corrida se puede reanudar con otro disyuntor, que es
+  inerte mientras no rechaza (2026-10-23).
 - **Con razón 5** (dos corridas de 1 000 y `prep3d-punta`): 15 rachas de 10 o más rechazos en
   1 394 filas con el relativo armado, una cada ~93; ‖g‖ sube a 5–12× la mediana y se queda, con la
   pérdida normal. Todas las de 25 rebobinaron, y las corridas conservaron el 32 y el 22 % de sus
@@ -211,25 +260,20 @@ se decidió. El porqué de cada constante del código está en
   arranque en 2 400 iteraciones, con iteración efectiva del 97.3 %. De 20 lotes aceptados a 5–10×
   en 3 103 filas armadas, uno solo (7.55×) precedió una racha que rebobinó. 10 no cubre todos los
   escalones: hubo de 12.1× y 12.4× (2026-10-19).
-- **La cota absoluta queda en 42 622** = 10⁴·48³/(93²·3): el `GUARD_ABS = 10⁴` del 2D, que en BSDS
-  cae en el hueco entre excursiones que se resuelven solas (≤ 6 113) y las que no (≥ 1.97·10⁵),
-  escalado por los valores sumados por parche (×4.26). Con la razón armada, la razón rechaza todo
-  lo que pase de ~3·10³, y la cota no actuó en ~5 000 filas: decide sólo en el arranque. Las 6
-  salidas de arranque observadas pasaron por un lote aceptado de 1.38·10⁴ a 3.96·10⁴; con 2·10⁴ se
-  habrían rechazado 4, con 10⁴ las 6. Sin escalar, el arranque sano la cruza (2026-10-08,
-  2026-10-19).
-- **El arranque.** Las primeras ~75 iteraciones rechazan ~50 lotes por la cota y rebobinan a la
-  it 3 dos o tres veces; `--guard` no lo toca, porque el relativo no está armado. Sin cotas, el pico
-  de la it 8 de la semilla 1 (‖g‖ 3.3–7.9·10⁵) se aceptó y la pérdida volvió sola (lote 4, un solo
-  evento). Un respaldo tomado en el arranque lo repite: en `prep3d-mil-s2` una racha tapó el
-  refresco de la 253 y el respaldo siguiente fue un estado de iteración efectiva 6. Si
-  `train/iteracion_efectiva` no avanza en unos cientos de iteraciones, se relanza con otra semilla.
-  El arranque de la larga (semilla 0, lote 32, máscara) no está observado (2026-10-18, 2026-10-19).
+- **Sin cota absoluta en 3D** (2026-10-23): sólo decidía antes de que se armara el relativo, y
+  ahí trababa la corrida (el primer arranque de `ciego-log-l32` y el primer intento de
+  `ciego-epocas-l32-10k`). Con el relativo armado no decidió nada en ~5 000 filas («Qué pasó con
+  los estallidos»).
+- **El arranque.** Hasta que se arma el relativo (100 aceptadas) sólo se rechaza lo no finito. Los
+  picos de las primeras 100 iteraciones de las corridas ciegas, de 1.06·10⁴ a 4.8·10⁷, se
+  aplicaron y se resolvieron solos (en la semilla 3 de `ciego-epocas-l32-10k`, 1.11·10⁵ hacia la
+  75); también el de la it 8 de la semilla 1 (‖g‖ 3.3–7.9·10⁵, lote 4). Si
+  `train/iteracion_efectiva` no avanza en unos cientos de iteraciones, se relanza con otra semilla
+  (2026-10-19, 2026-10-23).
 - **`rebobina()` restaura una copia del respaldo de Adam y conserva el lr vigente**: un segundo
   rebobinado al mismo respaldo devuelve Adam, y un rebobinado no deshace un halving (los dos con
   test). Es inerte sin rebobinados. El único rebobinado repetido al mismo respaldo ejercido en vivo
   fue en `v12-control` (2026-10-08, 2026-10-13).
-- Con `--aug-ganancia` la cota absoluta no se reescala con la ganancia (2026-10-13).
 
 ## Lo que mostraron las sondas
 
@@ -259,7 +303,8 @@ se decidió. El porqué de cada constante del código está en
 - **El ruido es el de la receta** (28.3 M vóxeles de lotes reales con máscara): desviación
   0.0980348 contra 25/255 = 0.0980392, gaussiano, sin correlación entre vecinos ni entre
   iteraciones, sin recorte, y bit a bit igual con cualquier partición del lote. La intensidad media
-  de los cubos de cerebro es 0.316: σ es el 31 % de la señal (2026-10-16).
+  de los cubos de cerebro es 0.316: σ es el 31 % de la señal (SNR 3.2 de la media; 10.2 de pico)
+  (2026-10-16).
 
 ## Cuando el ADMM 3D diverge
 
@@ -276,7 +321,7 @@ se decidió. El porqué de cada constante del código está en
 
 - **Qué es:** `(T/S)·ρ(∇²R)`, el índice del paso explícito; un paso no expande en la dirección
   dominante si cae en (0, 2). Con el prox el jacobiano es `(I − (T/S)·∇²R)/(1 + λ/S)` y el umbral
-  exacto `2 + λ/S`: el 2 redondo (`ddr/qsm3d.py:84`) se queda corto por < 0.7 % (2026-10-12).
+  exacto `2 + λ/S`: el 2 redondo (`ddr/qsm3d.py:87`) se queda corto por < 0.7 % (2026-10-12).
 - **Mide max|μ|, y el umbral 2 cubre sólo la curvatura positiva.** En el `best.pth` de
   `v12-control`, 1.84 con μ_min ≤ −90.6: un paso que expande ×1.99. En COSMOS dio 2.38–5.95 en
   todas las sondas. Se registra como diagnóstico (`qsm/estabilidad`) y no elige (2026-10-19).
@@ -315,9 +360,11 @@ se decidió. El porqué de cada constante del código está en
   ruido tampoco depende de la partición; con `--sigma-max` sí (2026-10-09, 2026-10-16).
 - **Parches:** sin máscara, al menos 35 % de tejido (> 0.05); el parche `i` depende sólo de
   `(semilla, i)` (2026-10-08).
-- **Candidatas implementadas y apagadas:** ruido ciego (`--sigma-max`), signo (`--aug-signo`) y
-  ganancia log-uniforme (`--aug-ganancia G`). No implementadas: EMA y una etapa con el término de
-  datos del dipolo, que es por donde pasaría entrenar contra el streaking (2026-10-08).
+- **En uso en las corridas vigentes:** ruido ciego log-uniforme (`--sigma-min 0.81 --sigma-max 55
+  --sigma-log`) y `--epocas`. **Implementadas y apagadas:** `--fraccion-limpias`, signo
+  (`--aug-signo`) y ganancia log-uniforme (`--aug-ganancia G`). No implementadas: EMA y una etapa
+  con el término de datos del dipolo, que es por donde pasaría entrenar contra el streaking
+  (2026-10-08, 2026-10-22).
 - **El calendario 2D no se traslada en números:** el mecanismo sí, pero un parche de 48³ tiene
   4.26× los valores de uno de 93²·3, y el modelo, 3.0× los parámetros (2026-10-12).
 - **Traza de 14 columnas:** las 10 de `train.py`, más ‖g‖ del primer micro-lote (10), lr vigente
@@ -379,16 +426,20 @@ se decidió. El porqué de cada constante del código está en
   desde un estado de su tronco, con otro calendario (2026-10-08).
 - **Bit a bit en CPU y `referencia`** (`tests/test_train3d.py`): 12 iteraciones seguidas contra
   6 + 6 y 9 + 3, con ruido ciego, aumentos y rebobinados a los dos lados del corte (2026-10-08).
-- **Libres al reanudar** (`LIBRES`): cadencias, seguimiento, evaluación QSM, estabilidad,
-  micro-lote y `vram_gb`. Cambiar el micro-lote avisa y sigue; cambiar el lote o una bandera de
-  receta se rechaza; las de `CALENDARIO` cambian sólo en una rama (2026-10-09, 2026-10-12).
+- **Libres al reanudar** (`LIBRES`): el techo (`--iterations`), cadencias, seguimiento, evaluación
+  QSM (también `--qsm-target-std`, `--qsm-sim2` y `--val-snr`), estabilidad, disyuntor (`--guard`,
+  `--guard-abs`, `--guard-respaldo`), micro-lote y `vram_gb`. Cambiar el micro-lote avisa y sigue;
+  cambiar el lote o una bandera de receta se rechaza; las de `CALENDARIO` cambian sólo en una rama
+  (2026-10-09, 2026-10-12, 2026-10-23).
 
 ## Implementación de la evaluación y del seguimiento
 
 - **`ddr/qsm3d.py`** es el ADMM del autor (`../tdv/wTDV_QSM_torch_3d.py`) con el TDV como denoiser,
-  sobre COSMOS (160³; 933 481 vóxeles en la máscara): μ = 0.008, μ₂ = 1.0, `target_std` = 0.06
-  (α = 4.8591). `admm_wtdv` acepta k denoisers: k = 3 es el pseudo-3D del autor, k = 1 la red 3D
-  sobre el volumen entero (2026-10-12).
+  sobre COSMOS (160³; 933 481 vóxeles en la máscara). μ = 0.008 y μ₂ = 1, fijos (2026-10-25).
+  α = target_std / std(χ₀ en la máscara), fijo desde t = 0; el default del protocolo es 0.06
+  (α = 4.8591 en COSMOS), y la evaluación vigente corre varios targets («La evaluación QSM»).
+  `admm_wtdv` acepta k denoisers: k = 3 es el pseudo-3D del autor, k = 1 la red 3D sobre el
+  volumen entero (2026-10-12).
 - **El NRMSE de QSM** es `100·‖χ − χ_COSMOS‖/‖χ_COSMOS‖` en la máscara de evaluación (χ_COSMOS ≠ 0,
   933 481 vóxeles; `nrmse_pct` en `ddr/qsm3d.py`): un RMSE dividido por el RMS de χ_COSMOS en esa
   máscara, que es 0.02800 ppm. Un 26 % es un RMSE de 0.00728 ppm (medido con `carga_cosmos`,
@@ -402,8 +453,11 @@ se decidió. El porqué de cada constante del código está en
 - **W&B** (`ddr/seguimiento.py`): `train/*` cada `--log-every` (con el `max|g|` del intervalo),
   `val/*` y `qsm/*` en cada validación, láminas, y el resumen igual a `estado.json`. Toda llamada va
   protegida: un error apaga el seguimiento sin cortar el entrenamiento, salvo `--seguimiento
-  online`, que falla al arrancar. Tras un corte, reanudar abre otra corrida con el mismo nombre; una
-  rama va en el grupo del tronco. Cuesta 0.19 ms por fila (2026-10-12, 2026-10-16).
+  online`, que falla al arrancar. Reanudar en el mismo `--out` reabre la misma corrida (id en
+  `seguimiento.json`), salvo que haya registrado pasos posteriores al estado: entonces abre otra.
+  Una rama abre otra en el grupo del tronco, con `padre_id`. Además: `qsm_t<target>/*`,
+  `qsm/mejor_target`, `qsm_sim2/*`, `val_snr<SNR>/*` y alertas. Cuesta 0.19 ms por fila
+  (2026-10-12, 2026-10-16, 2026-10-23, 2026-10-25).
 
 ## Hacia QSM-TDV
 
@@ -417,10 +471,10 @@ se decidió. El porqué de cada constante del código está en
   use la bajada y subida de `ddr` (sin escribir: el repositorio es de otra persona), más el
   conversor de claves, `a_qsm_tdv.py` en la raíz; sus scripts de validación, en
   `scripts/compat_qsm_tdv/`, locales (2026-10-18, 2026-10-19).
-- **Pendiente, la escala de χ:** nuestro ADMM multiplica χ por α ≈ 4.86 antes de la red y QSM-TDV
-  no; se resolvería pasando la fase y χ multiplicadas por α (derivado, no corrido). Además su W² es
-  14.47 veces menor que el nuestro, y corre en float16, sin medir con nuestros pesos (2026-10-12,
-  2026-10-19).
+- **Pendiente, la escala de χ:** nuestro ADMM multiplica χ por α = target_std / std(χ₀) antes de
+  la red (en COSMOS, ~1.6 a 0.02, ~4 a 0.05 y ~12 a 0.15) y QSM-TDV no; se resolvería pasando la
+  fase y χ multiplicadas por α (derivado, no corrido). Además su W² es 14.47 veces menor que el
+  nuestro, y corre en float16, sin medir con nuestros pesos (2026-10-12, 2026-10-19).
 
 ## Lo que dejó `ventana-3d-12h` (2026-10-13)
 
@@ -548,7 +602,14 @@ son sólo rótulos de dónde salió un número.
 | `ciego2d-35k` | 2D ciega al ruido, σ ~ U(0, 55) |
 | `prep3d-sobreajuste`, `prep3d-control` | prueba de sobreajuste 3D y su control con datos frescos |
 | `prep3d-punta`, `prep3d-reanuda` | las banderas de la larga a 200 iteraciones, y su reanudación desde la 100 |
-| `prep3d-g10-s2-2500` | la única 3D terminada con `--guard 10`, la más larga (2 500), lr constante |
+| `prep3d-g10-s2-2500` | la 3D de σ fijo más larga (2 500), con `--guard 10` y lr constante |
+| `etapa2-ciega` | la rama ciega de la etapa 2, σ ~ U(0, 55)/255, 1 500 iteraciones |
+| `ciego-log-l32` | ciega log-uniforme, σ ∈ [0.81, 55]/255, sin épocas ni disyuntor, 2 250 iteraciones |
+| `ciego-epocas-l32-10k` | ciega log-uniforme con épocas y lote 32, terminada en 10 000 (W&B `kxein1yw`) |
+| `ciego-epocas-l32-20k` | su rama a 20 000, lr constante, en vuelo (W&B `4027tbsv`) |
+| `prueba-disyuntor-s2` | la prueba del disyuntor 3D arreglado, 500 iteraciones |
+| `humo-panel` | la prueba de humo del panel de W&B, 4 iteraciones |
+| `denoising-snr`, `etapa2-pnp`, `snr-datos` | salidas de la etapa 1, de la etapa 2 y de «El SNR propio de los datos» |
 
 ---
 
@@ -648,7 +709,7 @@ de Adam de la it 1 500, y `last.pth` es posterior a ese paso.
 Los siete niveles con otras dos semillas de ruido por volumen: la semilla s usa 1234 + 1000·(s − 1)
 + i en el volumen i (la 1 es la de arriba). `scripts/denoising_por_snr_3d.py --semilla 2|3`, GPU 1,
 fp32 sin el contraste bf16, 17.3 y 17.5 min; `runs/denoising-snr/seed2|seed3/`. El resumen:
-`--resumen-semillas`, `docs/figuras/resultados-control/21-10-resumen_semillas.png` y
+`--resumen-semillas`, `docs/Sanity Check/resultados-control/21-10-resumen_semillas.png` y
 `resumen_semillas.json`.
 
 | SNR | RMSE entrada | RMSE salida, media de las 3 | rango entre semillas | salida / entrada |
@@ -672,23 +733,23 @@ fp32 sin el contraste bf16, 17.3 y 17.5 min; `runs/denoising-snr/seed2|seed3/`. 
 
 ### Figuras
 
-Una carpeta por red, y en la de la control una por semilla de ruido
-(`docs/figuras/resultados-control/seed1|seed2|seed3/`; «Tres semillas», abajo):
-- en cada `seedN/`, `21-10-denoising_snr_3.2.png`, `…_25.png`, `…_40.png`, `…_50.png`,
+Una carpeta por red, y en la de la control la de la semilla de ruido 1 (las otras dos dan lo
+mismo: «Tres semillas», abajo), `docs/Sanity Check/resultados-control/seed1/`:
+- `21-10-denoising_snr_3.2.png`, `…_25.png`, `…_40.png`, `…_50.png`,
   `…_60.png`, `…_80.png` y `…_100.png`: el volumen `sub-028881` (el de PSNR de salida mediano a
-  SNR 3.2 con la semilla 1, el mismo en las tres) en sus tres cortes centrales, con la tabla (el
+  SNR 3.2 con la semilla 1) en sus tres cortes centrales, con la tabla (el
   NRMSE primero, y el RMSE al lado) y el histograma de cada nivel;
-- en cada `seedN/`, `21-10-grilla_snr_axial.png`: los siete niveles lado a lado, corte axial
+- `21-10-grilla_snr_axial.png`: los siete niveles lado a lado, corte axial
   central del mismo volumen, con la limpia una vez de referencia y el NRMSE y el PSNR medios de los
   12 en cada columna;
-- sólo en `seed1/`, `21-10-grilla_snr_reescalado_axial.png` (lo mismo con el reescalado del paper)
+- `21-10-grilla_snr_reescalado_axial.png` (lo mismo con el reescalado del paper)
   y `21-10-ganancia_vs_T.png` (la ganancia contra el T de inferencia, brazo T);
 - en `resultados-control/`, `21-10-resumen_semillas.png`: el NRMSE por nivel con las tres semillas;
-- `docs/figuras/resultados-ciego-log-l32/`: lo mismo para la ciega log-uniforme en la 2 250 (fecha
+- `docs/Sanity Check/resultados-ciego-log-l32/`: lo mismo para la ciega log-uniforme en la 2 250 (fecha
   22-10; «Ruido ciego log-uniforme», resultado);
 - `22-10-convergencia.png` en `resultados-control/`, `resultados-ciego-log-l32/` y
   `resultados-g10-s2-2250/`: pérdida, validación a σ = 25, λ y T contra la iteración;
-- `docs/figuras/resultados-sobreajuste/21-10-prueba_overfit_sigma25.png`: la red de overfit sobre
+- `docs/Sanity Check/resultados-sobreajuste/21-10-prueba_overfit_sigma25.png`: la red de overfit sobre
   su lote fijo.
 
 **Convenciones de visualización**, las de `imshow_3d` de `../tdv` y de las láminas QSM de COSMOS:
@@ -732,7 +793,7 @@ limpia. Red control, los mismos 12 volúmenes y semillas, fp32, GPU 1; 7.2 min c
   entre tejidos multiplicadas por s, hasta 31 (la red no ve el nivel medio: K₁ tiene media cero y
   una constante no entra): si falla a s = 31, puede ser por ese contraste fuera de rango y no
   porque el reescalado no sirva.
-- Figura: `docs/figuras/resultados-control/seed1/21-10-grilla_snr_reescalado_axial.png`.
+- Figura: `docs/Sanity Check/resultados-control/seed1/21-10-grilla_snr_reescalado_axial.png`.
 
 ### Barrido de s: la ventana de contraste (2026-10-21)
 
@@ -825,7 +886,7 @@ nivel; la columna 0.0963, de la etapa 1:
 - No se descarta que el flujo se pase de largo: el óptimo baja con el ruido, y con el T entrenado
   la ganancia cae ~6 dB por cada duplicación del SNR. A SNR 3.2, T = 0.15 da +10.33 dB: la salida no
   diverge (dato de estabilidad).
-- Figura: `docs/figuras/resultados-control/seed1/21-10-ganancia_vs_T.png`.
+- Figura: `docs/Sanity Check/resultados-control/seed1/21-10-ganancia_vs_T.png`.
 
 **Lo que dice y lo que no.** Con menos ruido la salida empeora (RMSE 0.0317 a SNR 100 contra
 0.0246 a SNR 3.2); un filtro lineal fijo no haría eso, porque su error no sube cuando baja σ. Que
@@ -946,7 +1007,7 @@ NRMSE de salida en el cerebro, media de los 12; la entrada es la misma para las 
 - **Mejora la entrada sólo hasta SNR 25** (+1.80 dB). Desde SNR 40 la empeora (−0.49 dB), y a SNR
   100 le duplica el error (1.96 contra 0.96 %, −6.15 dB): le queda un piso de ~2 %.
 - Las semillas 2 y 3 dan lo mismo (≤ 0.01 pp). Figuras, como las de la control:
-  `docs/figuras/resultados-ciego-log-l32/seed1|seed2|seed3/` (fecha 22-10) y
+  `docs/Sanity Check/resultados-ciego-log-l32/seed1/` (fecha 22-10) y
   `22-10-resumen_semillas.png`.
 - **Alcance:** una corrida por brazo y 2 250 iteraciones: ordena, no da el número final.
 - **Convergencia: ninguna de las tres redes convergió** (`scripts/convergencia_3d.py`, de
@@ -966,17 +1027,20 @@ NRMSE de salida en el cerebro, media de los 12; la entrada es la misma para las 
   además lo agranda desde t = 8, y el NRMSE diverge (86.65 % en la 100).
 - **El α importa, y 0.06 es el peor de los medidos.** Con la control y con `prep3d-g10-s2-2500`, en
   COSMOS y en Sim2, 0.06 fue el peor de {0.02, 0.06, 0.25, 0.35}: 2.6–7.7 pp de NRMSE sobre 0.25,
-  con HFEN también peor. Con 0.25–0.35 la control converge y achica el cono.
+  con HFEN también peor. Con 0.25–0.35 la control converge y achica el cono. (Con la ciega, en
+  Sim2 queda entre los mejores: ver «Barrido de target y ADMM a 100 con la ciega» y «Grid de
+  target…».)
 - **La regla pre-registrada da 0.25 en las dos redes**, y se le propone al autor como α fijo de la
   evaluación de la corrida larga, con estados cada 500 (README, paso 6). `--qsm-target-std` está
-  implementada, con default 0.06.
+  implementada, con default 0.06. (Reemplazado el 25-10: ver «La evaluación QSM».)
 - **La ciega no diverge a 0.06**, achica el cono, mejora el NRMSE 3.2 pp y no cuesta PSNR a σ = 25.
   A 0.25 también es la mejor de las dos (29.63 contra 31.36 %).
 
 **Lo que no dice.**
 - **Cuál es el mejor α:** depende del sujeto (0.35 en COSMOS, 0.02 en Sim2) y, entre 0.02, 0.25 y
   0.35, de la métrica. Son dos sujetos, uno simulado, y dos redes cortas (1 500 y 2 500
-  iteraciones).
+  iteraciones). (Con la ciega se invierte: 0.02 en COSMOS y 0.05–0.06 en Sim2; ver «Barrido de
+  target y ADMM a 100 con la ciega» y «Grid de target…».)
 - **Por qué la red agranda el cono:** no lo explican ni el piso sin datos ni las 20 pasadas
   aisladas; la medición que separa las hipótesis quedó diseñada y sin correr.
 - **Si la ciega sirve para la corrida larga:** una corrida por brazo, un sujeto, λ trabada en 0.
@@ -1069,10 +1133,10 @@ lo que la red recibe de vuelta más fuerte, lo quita cada vez menos.
 
 ### Figuras
 
-- `docs/figuras/21-10-pnp_entrada_salida.png`: referencia, lo que entra, lo que sale y sus
+- `docs/Sanity Check/21-10-pnp_entrada_salida.png`: referencia, lo que entra, lo que sale y sus
   diferencias, en ppm y ±0.1 (convención QSM de `../tdv`), corte sagital central (contiene B0), a
   t = 1, 5, 10 y 25: las rayas oblicuas crecen en «sale − referencia».
-- `docs/figuras/21-10-pnp_por_iteracion.png`: NRMSE, SNR de entrada, ganancia de la red, fracción
+- `docs/Sanity Check/21-10-pnp_por_iteracion.png`: NRMSE, SNR de entrada, ganancia de la red, fracción
   del error en el cono y energía del error sale/entra en y fuera del cono, por iteración.
 
 **Lo que dice y lo que no.** La red hace lo que aprendió en T1: quita error con estructura de ruido
@@ -1109,7 +1173,7 @@ amplitud (α) ni otro T dentro del ADMM están medidos (D).
   red casi sin cambio; a lo más moverían el mínimo y la iteración en que el error empieza a crecer.
 
 **RESULTADO de D.** `scripts/pnp_adentro_del_admm.py perillas`, GPU 1, 23.0 min; la figura,
-`docs/figuras/21-10-perillas_admm.png`. La base reproduce A (39.01 % en t = 5).
+`docs/Sanity Check/21-10-perillas_admm.png`. La base reproduce A (39.01 % en t = 5).
 
 | configuración | NRMSE mín | t mín | pararía en | NRMSE en 25 | α | umbral del cono | error de salida en el cono (t mín) |
 |---|---|---|---|---|---|---|---|
@@ -1160,7 +1224,7 @@ Advertencia, como en D: un solo sujeto y el mejor de 16 valores. Es exploración
 
 **RESULTADO del borde: con target_std alto el ADMM converge, y la red achica el error del cono en
 vez de agrandarlo.** `scripts/pnp_adentro_del_admm.py corre --target-std 0.25|0.35`, GPU 1, 6.0 min
-cada una; la figura, `docs/figuras/21-10-pnp_por_iteracion_alfa.png`.
+cada una; la figura, `docs/Sanity Check/21-10-pnp_por_iteracion_alfa.png`.
 
 | target_std | α | NRMSE mín (t) | pararía en (sin techo) | NRMSE en 100 | error de entrada / σ₀, t = 1–5 → 100 | energía del cono sale/entra, t ≥ 8 | fuera del cono, t ≥ 8 |
 |---|---|---|---|---|---|---|---|
@@ -1295,7 +1359,7 @@ agregaron antes de lanzar, después del RESULTADO de Sim2.
   35.93 %): **0.25, 1.8 pp** (1.8 en COSMOS, 1.1 en Sim2); 0.02, 2.4 pp (2.4 y 0); 0.35, 2.9 pp
   (0 y 2.9); 0.06, 5.3 pp (5.3 y 4.3). Con la control había dado 0.25 con 2.8 pp. Da 0.25 en las
   dos redes: por la condición escrita, se le propone al autor un α fijo de target_std 0.25 para
-  la evaluación QSM de la corrida larga.
+  la evaluación QSM de la corrida larga. (Reemplazado el 25-10: ver «La evaluación QSM».)
 - **Qué tan firme es la elección:** en esta red, 0.25 le gana a 0.02 por 0.6 pp de peor distancia
   (1.8 contra 2.4), menos que la escala de 2.07 pp de D; con la control, por 2.0 pp. Lo que no
   depende de ese margen: en las dos redes y los dos sujetos, 0.06 (el α actual) es el peor de los
@@ -1310,7 +1374,8 @@ agregaron antes de lanzar, después del RESULTADO de Sim2.
   hace sólo la distancia.
 - **La métrica de la regla.** La regla pre-registrada es la del NRMSE, y da 0.25. Con HFEN
   elegiría 0.02 en g10 y 0.35 en la control («RESULTADO de las métricas», abajo). Esa duda la cubre
-  evaluar después los checkpoints de la corrida larga a 0.02, 0.06 y 0.25.
+  evaluar después los checkpoints de la corrida larga a 0.02, 0.06 y 0.25. (Reemplazado el 25-10:
+  ver «La evaluación QSM».)
 
 **PRE-REGISTRO: un piso de estabilidad que no usa la χ verdadera.** Desde la primera
 reconstrucción del ADMM (sólo el término de datos), z ← M·D(α·z)/α 20 veces, con el α de cada
@@ -1506,7 +1571,7 @@ validación a σ = 25 en el cerebro, por validación (250 a 1 500):
 **RESULTADO de C: el principal se cumple, el mecanismo aislado no.** GPU 1, 25 min en total;
 `scripts/pnp_adentro_del_admm.py corre --checkpoint runs/etapa2-ciega/last.pth --etiqueta
 _ciega[_ts025]`, `itera [--checkpoint … --etiqueta _ciega]`, `scripts/denoising_por_snr_3d.py
---red … --etiqueta _ciega` y `--grad-r`; la figura, `docs/figuras/21-10-pnp_ciega_vs_control.png`.
+--red … --etiqueta _ciega` y `--grad-r`; la figura, `docs/Sanity Check/21-10-pnp_ciega_vs_control.png`.
 
 | red | target_std | evaluación (t) | pararía en (sin techo) | NRMSE en 100 | energía del cono sale/entra, t ≥ 8 | fuera del cono, t ≥ 8 |
 |---|---|---|---|---|---|---|
@@ -1579,7 +1644,8 @@ el borde de su grilla. En ppm:
 - **Para el diseño:** con desvíos de χ₀ que difieren 7 %, target_std 0.25 ya es en la práctica un
   α fijo (20.2 en COSMOS, 21.7 en Sim2), a ≤ 2.8 pp del mejor en las ocho lecturas (dos redes, dos
   sujetos, evaluación y t = 100). Ninguna versión de target_std, robusta o no, ve los artefactos:
-  mide contenido, no error.
+  mide contenido, no error. (Con la ciega no vale: en la 7 936, 0.25 queda 8.3 pp sobre el mejor en
+  COSMOS y 9.1 pp en Sim2; ver «curvas por target», 23-10.)
 
 ## 2026-10-21 — E0: el desajuste del campo, y el pre-registro de E1
 
@@ -1654,7 +1720,8 @@ Agente teórico, derivada y sin medir). Se hace en la literatura (DPIR, Zhang et
 al. 2017; Wei et al. 2020), pero aquí α es la única perilla y cambia también el contraste que ve la
 red. Ajustarlo al error de cada paso lo lleva a la zona de α_MAP (target 0.040–0.054, E0), junto a
 0.06, el peor. La versión con fundamento es la red ciega, que se adapta al ruido sin reescalar. No
-se implementa.
+se implementa. (Un calendario de target fuerte → suave se probó el 25-10 y no sirve: ver «ADMM en
+dos rondas».)
 
 ## 2026-10-22 — El panel de W&B y su prueba corta: `panel-l8`
 
@@ -1686,7 +1753,7 @@ aritmética del entrenamiento:
   500 iteraciones, validación y QSM cada 50 (COSMOS y Sim2, target_std 0.25), `--val-snr 25 50
   100`, sin estabilidad, W&B online (`cienfueg0z-tdv/training-tdv3d`). Un primer arranque con
   `--val-snr 25 100` se paró en la iteración 50 para sumar SNR 50 (pedido del autor); quedó en
-  `runs/panel-l8/intento-sin-snr50/`.
+  `runs/panel-l8/intento-sin-snr50/` (borrada el 25-10).
 - **Pregunta:** ¿el panel deja ver, en 10 evaluaciones, si la red aprende, y cuánto cuesta cada
   evaluación (para fijar la cadencia de la corrida larga)?
 - **Predicción:** la pérdida y el NRMSE de validación bajan sobre todo en las primeras ~200
@@ -1697,7 +1764,8 @@ aritmética del entrenamiento:
 
 **RESULTADO de `panel-l8` (2026-10-22): el panel muestra que aprende, y que la ganancia a mucho
 ruido se paga a poco ruido.** 500 iteraciones en 57 min en la 5070 Ti, con las 10 evaluaciones; W&B
-`cienfueg0z-tdv/training-tdv3d`, run `nl54gxl9`. NRMSE en %, entrada → salida:
+`cienfueg0z-tdv/training-tdv3d`, run `nl54gxl9` (borrada el 25-10, con su carpeta). NRMSE en %,
+entrada → salida, con SNR de la media (de pico: 10.2, 79, 158 y 316):
 
 | it | SNR 3.2 | SNR 25 | SNR 50 | SNR 100 | COSMOS (mín) | HFEN | XSIM | Sim2 (mín) |
 |---|---|---|---|---|---|---|---|---|
@@ -1729,7 +1797,8 @@ ruido se paga a poco ruido.** 500 iteraciones en 57 min en la 5070 Ti, con las 1
   `--mascara-cerebro`, `lista_train_1000.txt`) más `--epocas` (31 iteraciones por época), 5 000
   iteraciones (161 épocas), validación y QSM cada 496 (16 épocas) y en la última, COSMOS y Sim2
   con target_std 0.25, `--val-snr 25 50 100`, estados cada 496, sin estabilidad, W&B online.
-  Código congelado en `runs/ciego-epocas-l32/codigo`.
+  Código congelado en `runs/ciego-epocas-l32/codigo` (borrada el 25-10; la 10k tiene su copia en
+  `runs/ciego-epocas-l32-10k/codigo`).
 - **Pregunta:** ¿la ciega sigue mejorando después de la 2 250? En `ciego-log-l32` la validación a
   σ = 25 quedó plana desde la 500 mientras la pérdida y λ seguían bajando (su resultado, arriba).
   Se lee en el panel: NRMSE a SNR 3.2, 25, 50 y 100, y NRMSE, HFEN y XSIM en COSMOS y Sim2, por
@@ -1748,7 +1817,7 @@ ruido se paga a poco ruido.** 500 iteraciones en 57 min en la 5070 Ti, con las 1
   reparto: espectralmente no es blanco, «¿α sin GT?», 23-10): no nace en el cono. Se concentra
   ahí después, porque la red quita el de afuera y no el del cono (34–86 % del error que sale); en
   las reconstrucciones de `panel-l8`, el factor del cono 1.9–2.3 es 41–50 % de la energía del error.
-  Corregido en `docs/figuras/por-que-no-reescalar/` (txt y figura 3).
+  Corregido en `docs/Sanity Check/por-que-no-reescalar/` (txt y figura 3).
 - **El piso de ~2 % a SNR 50–100, lectura, no medida:** la variación fina propia de los T1
   (σ 0.0041–0.0083, «El SNR propio de los datos») está en la referencia, y sobre rms(y) = 0.337 en
   el cerebro equivale a 1.2–2.5 % de NRMSE. Una red que la quita como ruido queda en ese rango
@@ -1790,7 +1859,7 @@ en el log), se para y lo decide el autor.
 **Costo:** ~9.2 s por iteración con las evaluaciones, ~25–27 h.
 
 **RESULTADO del primer intento (semilla 2 con la cota): trabada, cortada a mano en la 275**
-(`runs/ciego-epocas-l32-10k/intento-cota-s2/`).
+(`runs/ciego-epocas-l32-10k/intento-cota-s2/`, borrada el 25-10).
 - Hasta la 175, la `loss` fue idéntica a la de `ciego-epocas-l32`, a tres decimales: misma semilla,
   mismas épocas.
 - En la 180 la cota rechazó el estallido (|g| 1·10⁵–1.6·10⁶ con `loss` 116–2 372), pero el
@@ -1805,7 +1874,7 @@ autor eligió para `ciego-epocas-l32`). La semilla 2 con épocas repite el estal
 la cota no lo saca. La pregunta y la lectura no cambian. Si estalla, se pierde como
 `ciego-epocas-l32`: se ve en W&B como el PSNR en el cerebro hundido y el ADMM devolviendo χ0.
 
-**Extender una corrida sana sí se puede:** `--iterations` está en `LIBRES` (`train3d.py:165`), así
+**Extender una corrida sana sí se puede:** `--iterations` está en `LIBRES` (`train3d.py:169`), así
 que se reanuda con `--reanudar` y otro techo.
 
 **Arranque de la semilla 3 (00:38 del 23-10):** sana en la 300, con `loss` 42–66, sin rechazos y
@@ -1938,7 +2007,8 @@ código de la rama, sin QSM ni W&B):
 `plan-desde-4960.sh`: `--guard 10`, sin cota, respaldo cada 50 y `--val-snr` en SNR de pico.
 - W&B abrió otra corrida, `b3vm1g37`, porque la anterior (`1tfszcg4`) ya había registrado hasta
   la 4 975, después del punto de reanudación. En la nueva, `val_snr25/50/100` miden σ = 10.2, 5.1
-  y 2.55 /255; en la anterior, 3.2, 1.6 y 0.8.
+  y 2.55 /255; en la anterior, 3.2, 1.6 y 0.8. (Las dos se borraron el 25-10: la 10k entera es
+  `kxein1yw`; ver «W&B, limpio».)
 
 ## 2026-10-23 — El ruido máximo del entrenamiento contra la primera iteración del ADMM
 
@@ -1977,7 +2047,8 @@ evaluación, techo de 25):
   4 960, y λ baja de 0.1 a 0.005.
 - **Lectura:** mejor denoiser no es mejor prior (como en 2D, «el PSNR no elige»). Las altas
   frecuencias mejoran y crece el error de baja frecuencia (el cono, según el factor del panel,
-  ×2.2).
+  ×2.2). (Refutado el 23-10: el empeoramiento era del target fijo en 0.25; ver «Barrido de target
+  y ADMM a 100 con la ciega».)
 
 ## 2026-10-23 — Barrido de target y ADMM a 100 con la ciega
 
@@ -2064,7 +2135,7 @@ antes de medir).
   ~60 % en la 100.
 - **Medición propuesta, sin correr:** checkpoint final y `best_qsm`, COSMOS y Sim2, target ∈ {0.04,
   0.06, 0.08, 0.10, 0.12, 0.15}, 100 iteraciones: 24 corridas, ~3 h de GPU 1 cuando termine la
-  10k.
+  10k. (Hecha el 25-10 con la grilla 0.02–0.06: ver «Grid de target…».)
 
 **Los saltos finales del ADMM** (pregunta del autor, 2026-10-23, después del pre-registro; de
 `resultados.json`, sin correr nada). El update es el cambio relativo de χ por iteración, en %, el
@@ -2088,7 +2159,8 @@ de la parada del autor.
 checkpoints del barrido de arriba (`best_qsm` de la 1 488 y `estado-004960`), ADMM de 100 sin
 corte, COSMOS y Sim2: `scripts/barrido_target_ciega.py 0.02 0.06 0.12`, en la GPU 0 (permiso del
 autor, 23-10 a las 22:00; ~1.6 h). El autor pidió 0.02 y 0.12; 0.06 se agrega para elegir el
-tercer target. Para W&B el autor decidió 0.25 y 0.06, sin 0.12.
+tercer target. Para W&B el autor decidió 0.25 y 0.06, sin 0.12. (Reemplazado el 25-10 por 0.15,
+0.02 y 0.05: ver «La rama a 20 000».)
 - **Predicción:**
   - en COSMOS, 0.12 es el mejor de los tres con los dos checkpoints; con `best_qsm` los tres quedan
     sobre el 30.81 % de 0.25 (la parábola da ~34 % a 0.12);
@@ -2150,10 +2222,12 @@ tabla entera, NRMSE mínimo (t) · update en t = 99 (%), con el mejor de cada co
 - **Control de la evaluación de W&B** (`scripts/qsm_targets_wandb.py evalua 0.25 --estados 1488`):
   reproduce la del entrenamiento (30.88 % en COSMOS y 42.13 % en Sim2, t = 24 de 25).
 - **Consecuencia:** a la evaluación de la rama a 20 000 se le suma 0.02 (0.25, 0.06 y 0.02).
+  (Reemplazado el 25-10 por 0.15, 0.02 y 0.05: ver «La rama a 20 000».)
 
 **RESULTADO de las curvas por target** (`scripts/qsm_targets_wandb.py`, GPU 0, 23:40–01:20; la
 evaluación del entrenamiento, 25 iteraciones, sobre los 16 estados de la 496 a la 7 936; W&B
-`ciego-epocas-l32-10k-targets`). NRMSE mínimo en la 496 → 1 488 → 4 960 → 7 936:
+`ciego-epocas-l32-10k-targets`, borrada el 25-10; `kxein1yw` tiene el QSM de los 21 estados a
+0.15, 0.02 y 0.05). NRMSE mínimo en la 496 → 1 488 → 4 960 → 7 936:
 
 | | 0.25 (la del entrenamiento) | 0.06 | 0.02 |
 |---|---|---|---|
@@ -2169,9 +2243,9 @@ evaluación del entrenamiento, 25 iteraciones, sobre los 16 estados de la 496 a 
   8 432 las dos curvas quedan casi planas: varían 0.3 pp o menos.
 
 **RESULTADO de `ciego-epocas-l32-10k`: terminó la 10 000 sin cortes** (24-10, 04:18; 25.89 h en
-total; W&B `b3vm1g37` desde la 4 960).
+total; W&B `b3vm1g37` desde la 4 960, borrada el 25-10: la consolidada es `kxein1yw`).
 - **Denoising en el cerebro, en la 10 000:** el mejor PSNR de la corrida, 33.787 dB. NRMSE de
-  entrada → salida: SNR 25, 12.19 → 4.18 %; SNR 50, 6.10 → 3.27 %; SNR 100, 3.05 → 2.17 %.
+  entrada → salida: SNR de pico 25, 12.19 → 4.18 %; 50, 6.10 → 3.27 %; 100, 3.05 → 2.17 %.
 - **El disyuntor 3D actuó una vez:** 25 rechazos seguidos en la 9 768 y un rebobinado a la 9 711,
   sin TRABADA. 25 lotes rechazados de 10 000; iteración efectiva 9 943. VRAM pico 11.51 GiB.
 - **QSM a 0.25 (la evaluación de la corrida):** 34.95 % en COSMOS y 45.06 % en Sim2; `best_qsm`
@@ -2204,8 +2278,14 @@ las 16:17). A las 05:12:14 se cerró la última sesión de login del usuario (la
 sesión de Claude Code que lanzaba las corridas), y con `Linger=no` systemd paró todo el gestor de
 usuario (`exit.target`), con la unidad de la corrida adentro. El log no tiene error: llega a la
 10 025. No hay estado nuevo (el último es el de la 10 000) y se pierden ~6 minutos. La corrida de
-W&B `zkuxpf7m` queda con un punto. Arreglo: `loginctl enable-linger`, para que el gestor de usuario
-no dependa de una sesión abierta; las de 10 000 sobrevivieron porque esa sesión siguió abierta.
+W&B `zkuxpf7m` queda con un punto (borrada el 25-10, con la carpeta del intento). Arreglo:
+`loginctl enable-linger`, para que el gestor de usuario no dependa de una sesión abierta; las de
+10 000 sobrevivieron porque esa sesión siguió abierta.
+
+**Segundo lanzamiento** (25-10, 18:07): en `runs/ciego-epocas-l32-20k`, desde
+`estado-010000.pth`, con el pre-registro rehecho (arriba) y las banderas de su `plan.sh`. W&B
+`4027tbsv`, en el grupo `ciego-epocas-l32`, enlazada a `kxein1yw` (`padre_id`). El linger quedó
+aplicado: `Linger=yes`.
 
 ## 2026-10-25 — Grid de target 0.02–0.06, μ y ADMM en dos rondas, con la red de la 10 000
 
@@ -2292,9 +2372,26 @@ t = 99 (%):
   - la validación de `history.json`, con los niveles de SNR sólo desde la 5 456 (antes, la
     convención vieja);
   - el QSM de los 21 estados a 0.15, 0.02 y 0.05 con las claves de `train3d.py`.
-  - Su id quedó en `seguimiento.json`, así que la rama a 20 000 se enlaza a ella.
+  - Su id, `kxein1yw`, quedó en `seguimiento.json`, así que la rama a 20 000 se enlaza a ella.
 - **Se borraron** las corridas de W&B de panel-l8, ciego-epocas-l32, las tres de la 10k partida,
   la de targets y el intento de 6 minutos de la 20k.
 - **También las carpetas locales** `runs/panel-l8`, `runs/ciego-epocas-l32`,
-  `runs/ciego-epocas-l32-10k/intento-cota-s2` y `runs/ciego-epocas-l32-20k`. Los números quedan
-  en esta bitácora.
+  `runs/ciego-epocas-l32-10k/intento-cota-s2` y la del primer intento de la 20k (la rama se
+  relanzó en `runs/ciego-epocas-l32-20k` el 25-10 a las 18:07; W&B `4027tbsv`). Los números
+  quedan en esta bitácora.
+
+**Auditoría y «Sanity Check»** (25-10, pedido del autor). Cuatro agentes leyeron README, AGENTS.md,
+`docs/`, la bitácora, el estilo del código y las figuras, y otros cuatro aplicaron los arreglos
+(comentarios y docs; ninguna lógica). Lo que queda:
+- **Las figuras:** `docs/figuras/` pasó a `docs/Sanity Check/`, con 68 archivos y 33 MB, fuera de
+  git. Todas son del 21–22-10, de redes cortas ya superadas, y usan la convención de SNR vieja.
+  Se borraron `seed2/` y `seed3/`, que repetían `seed1/`, y `22-10-3-nrmse_qsm_vs_alfa.png`, que
+  `25-10-grid-target.png` rehízo con la red vigente: quedan 35 archivos y 14 MB.
+- **`docs/Sanity Check/resumen/` sí va en git** (~0.4 MB): `RESUMEN.md`, con lo vigente, lo
+  descartado y el inventario de las figuras viejas, y tres figuras nuevas
+  (`scripts/resumen_sanity_check.py`): QSM por target durante el entrenamiento, grid de target y μ.
+- **`train.py` y `train3d.py`:** el bloque final de los dos, que repetía «BUCLE» de
+  `docs/porque-del-codigo.md`, queda en un puntero; más un comentario que citaba una corrida
+  borrada y 12 ajustes de comentarios y docstrings. Sin docstrings, el AST es idéntico al de
+  antes. Se aplicaron con la rama a 20 000 en vuelo y con el OK del autor: la corrida lee su copia
+  en `runs/ciego-epocas-l32-20k/codigo/`, así que no la toca.

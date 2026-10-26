@@ -103,8 +103,8 @@ pasos de gradiente explícitos, sin ADMM. Un checkpoint de `train3d.py` no carga
 volumen: la bajada de escala no es el mismo operador junto a las caras, y ∇R difiere 1.2–3.6 %. Lo
 decidido el 2026-10-18 es una bandera en QSM-TDV que use nuestra bajada y subida (opción a, sin
 escribir: el repositorio es de otra persona). Falta además la escala de χ, que nuestro ADMM
-multiplica por α ≈ 4.86 antes de la red y QSM-TDV no toca, y calibrar allí los pasos y el número de
-iteraciones.
+multiplica antes de la red por α = target/std(χ₀) y QSM-TDV no toca (en COSMOS, α = 4.86 a target
+0.06 y ~1.6 a 0.02, el mejor de la red ciega), y calibrar allí los pasos y el número de iteraciones.
 
 ### Entrenar en 2D
 
@@ -136,11 +136,10 @@ Por defecto, 40 000 iteraciones y el lr a la mitad cada 25 000 (`--hitos` sola l
 `--hitos 30000` lo divide desde la 30 001).
 
 **El arranque puede ser inestable.** La prueba de 40 iteraciones sólo comprueba que todo corre (con
-`--log-every` en 250, no imprime líneas de avance): la de este repositorio rechazó 25 lotes y
-terminó con 6 iteraciones efectivas y su `best.pth` marcado `*mejor*`; la de 400 llegó a 331. Hasta
-juntar 100 normas aceptadas, el disyuntor sólo aplica su cota absoluta, y hasta la iteración ~250 el
-único respaldo es el de la 3: rebobinar equivale a reiniciar. Si `ef` no avanza en unos cientos de
-iteraciones, se relanza con otra semilla.
+`--log-every` en 250, no imprime líneas de avance). Hasta juntar 100 normas aceptadas, el
+disyuntor sólo rechaza un ‖g‖ no finito. El respaldo se refresca cada 50 iteraciones sanas, sólo con
+el relativo armado: hasta ~la 100 el único es el de la 3, y rebobinar equivale a reiniciar. Si `ef`
+no avanza en unos cientos de iteraciones, se relanza con otra semilla.
 
 **Memoria.** `auto` elige el micro-lote (parches por backward; el lote se acumula) con un modelo del
 entrenamiento y un margen del 10 %, supuesto suficiente para la validación; el pico real queda en
@@ -226,16 +225,26 @@ fondo cercano a cero. Los volúmenes se cargan en RAM (2 000 de LDM_100k ocupan 
 | `traza.npy`, `estado.json` | una fila por iteración; el resumen final (terminó si dice `"terminada": true`). En 3D con `--mascara-cerebro`, su `mejor_psnr` es el PSNR en el cerebro, el criterio de `best.pth`, y `psnr_final`, el del recorte entero en la última validación: no se comparan entre sí. El resumen de W&B lleva lo mismo |
 | `estado-<it>.pth` | 3D: lo necesario para reanudar, cada `--guardar-cada` (10 000) y en la última |
 | `best_qsm.pth`, `qsm.jsonl` | 3D con COSMOS: el checkpoint para QSM y una línea por evaluación QSM |
+| `qsm_sim2.jsonl` | 3D con `--qsm-sim2`: una línea por evaluación en Sim2, que no elige |
 
 El log escribe una línea cada `--log-every` iteraciones y otra por validación y por rebobinado; de
 una racha de rechazos, las tres primeras y una cada 1 000.
-En 3D (prueba de 400):
+En 3D (`ciego-epocas-l32-10k` de la 9 744 a la 9 775 y una validación de su rama a 20 000,
+recortadas):
 
 ```text
-[    13] LOTE RECHAZADO |g|=48297.3 mediana=1355.7 amp=nan loss=1384.601 (seguidos 1)
-[    72] REBOBINADO a la it 3 (2 en lo que va) |g|=6.95e+04
-    eval PSNR=30.223 dB, en tejido 29.951 dB, en cerebro 31.859 dB | NRMSE 9.13 %, … *mejor*
-[   250/400] loss=  97.103 lr=4.00e-04 T=0.10946 lambda=0.08285 |g|=291.5 max|g|=8.13e+04 corr=0.952 rech=50 reb=2 ef=181 (…)
+[  9744] LOTE RECHAZADO |g|=5332.8 mediana=45.0 amp=nan loss=110.252 (seguidos 1)
+[  9750/10000] loss= 112.667 lr=4.00e-04 T=0.09039 lambda=0.01655 |g|=4676.5 max|g|=8.66e+03 corr=1.228 rech=7 reb=0 ef=9750 (0.6h restantes)
+[  9768] REBOBINADO a la it 9711 (1 en lo que va) |g|=3.95e+03
+    ALERTA: rebobinado: 25 rechazos seguidos en la it 9768; vuelve a la it 9711
+[  9775/10000] loss=  21.026 lr=4.00e-04 T=0.09019 lambda=0.01875 |g|=50.5 max|g|=1.18e+04 corr=0.920 rech=25 reb=1 ef=9718 (0.6h restantes)
+…
+    eval PSNR=31.360 dB, en tejido 31.057 dB, en cerebro 33.765 dB | NRMSE 8.01 %, en tejido 7.78 % (12 vols)
+    eval SNR 25 en cerebro: PSNR 27.959 → 37.441 dB | NRMSE 12.19 → 4.09 %
+    qsm 0.02 NRMSE=26.21 % (mínimo 26.21 % en la iteración 19 del ADMM) | 22 iteraciones, motivo empeora | alpha=1.6197 | …
+    qsm: mejor target 0.02 (26.21 %)
+    best_qsm.pth: NRMSE QSM mínimo 26.21 % (final 26.21 %, motivo empeora, target 0.02), el menor hasta ahora
+    qsm Sim2: mejor target 0.05 (36.34 %)
 ```
 
 | campo | qué es |
@@ -278,7 +287,8 @@ uv run python train3d.py --out runs/mio3d-lr2 $A --reanudar runs/mio3d/estado-01
 ```
 
 Sólo pueden cambiar las banderas de `LIBRES` en `train3d.py` (iteraciones, cadencias, memoria,
-seguimiento, QSM) y, en una rama (otro `--out`), el calendario: `--hitos`, `--meseta` y
+seguimiento, la evaluación QSM y Sim2, `--val-snr`, la estabilidad y `--guard`, `--guard-abs` y
+`--guard-respaldo`) y, en una rama (otro `--out`), el calendario: `--hitos`, `--meseta` y
 `--meseta-mitades`; si otra difiere, `--reanudar` se niega
 y la nombra. De una bandera repetida vale la última. Otro micro-lote cambia el orden de suma (el
 log lo avisa).
@@ -289,16 +299,18 @@ log lo avisa).
    Blackwell, el paquete `-open`): con uno menor, torch no ve la GPU y `train3d.py` sale con error
    (en CPU corre sólo con `--sin-compilar`, para probar).
    `torch.compile` pide un compilador C (`sudo apt install build-essential`). RAM: la corrida
-   carga los 2 000 volúmenes de `lista_train_2000.txt` (~19 GB), más los workers, el compilador y
-   la evaluación. Medido con esa lista en la 5070 Ti (2026-10-18, `runs/prep3d-punta`): 25.7 GiB
-   de pico al compilar la primera evaluación, y 23.4–24.9 entrenando. Hacen falta más de 32 GB, y
-   mejor 48: con 32 y un escritorio quedan 1–2 GiB, y sin swap eso es un corte por memoria. Disco:
-   ~45 GB (estimado): 31.7 de datos, ~5 del entorno, la caché de uv y unos 2 de estados a
-   100 000 iteraciones.
+   carga los 1 000 volúmenes de `lista_train_1000.txt` (~9.5 GB), más los workers, el compilador y
+   la evaluación. Medido con la lista de 2 000 (~19 GB) en la 5070 Ti (2026-10-18,
+   `runs/prep3d-punta`): 25.7 GiB de pico al compilar la primera evaluación, y 23.4–24.9
+   entrenando; con la de 1 000, ~9 GiB menos (derivado). Con la de 2 000 hacen falta más de 32 GB,
+   y mejor 48: con 32 y un escritorio quedan 1–2 GiB, y sin swap eso es un corte por memoria.
+   Disco: ~54 GB (estimado): 31.7 de datos, ~5 del entorno, la caché de uv y ~11 de estados a
+   100 000 iteraciones (uno cada 500).
 2. **Código y entorno.**
-   - **`main` en GitHub tiene que tener el código de este README antes de clonar:** el `grep` de
-     `QSM_MAX_ITER` de abajo lo comprueba. Una versión anterior corre sin error, pero con otras
-     reglas de evaluación y de selección de checkpoints.
+   - **`main` en GitHub tiene que tener el código de este README antes de clonar:** los `grep`
+     de abajo lo comprueban (varios `--qsm-target-std` y el respaldo del disyuntor 3D). Una
+     versión anterior puede correr sin error, pero con otras reglas de evaluación y de selección
+     de checkpoints.
    - El repositorio es público: con `https` no hace falta clave SSH.
    - El clon va antes de copiar los datos (paso 3): `rsync` crea la carpeta, y `git clone` no
      clona en una que no está vacía.
@@ -311,7 +323,7 @@ log lo avisa).
    curl -LsSf https://astral.sh/uv/install.sh | sh     # una vez, si no está uv
    cat /proc/driver/nvidia/version                     # driver ≥ 580
    git clone https://github.com/CIB-UC-QSM/Training-TDV.git && cd Training-TDV
-   grep -n '^QSM_MAX_ITER = 25' train3d.py   # tiene que encontrar la línea
+   grep -n 'nargs="+", default=\[TARGET_STD\]' train3d.py && grep -n '^GUARD_RESPALDO_3D = 50' train3d.py   # las dos líneas
    uv sync --locked --managed-python && mkdir -p runs
    uv run python -c "import torch; print(torch.cuda.get_device_name())"
    ```
@@ -362,7 +374,7 @@ log lo avisa).
      - Si el de 16 no baja claramente el `s_por_parche` del de 8, se pasa `--micro-lote 8`.
    - **La prueba de 40 iteraciones.** La de «Entrenar en 3D» va con `--seguimiento no`, sin
      `--mascara-cerebro` ni `--meseta` y fuera de systemd. No prueba la credencial de
-     `~/.netrc` vista desde una unidad, ni linger, ni las 2 012 máscaras. En el destino conviene
+     `~/.netrc` vista desde una unidad, ni linger, ni las máscaras. En el destino conviene
      correr el comando del paso 6, con las banderas finales, cambiando cinco cosas: otro
      `--unit`, otro `--out`, `--wandb-proyecto training-tdv3d-pruebas` (para no ensuciar el
      proyecto público), `--guardar-cada 20` y `--eval-every 20 --eval-qsm-cada 20`, más
@@ -399,9 +411,12 @@ log lo avisa).
      subiendo 1σ cada 1 000 iteraciones, parte el lr por error en 5 000 iteraciones el 80 % de las
      veces (Monte Carlo); 500 × 10 o 100 × 50, el 0 %. En 2D, 2 000 iteraciones de paciencia habrían
      partido el lr en 4 de 8 corridas mientras el PSNR todavía subía.
-   - **El costo** (5070 Ti, 8.77 s/it): QSM y estabilidad cada 100 suman un 19.4 % al entrenamiento,
-     ~47 h en 100 000; PSNR cada 100 con QSM cada 500, un 5.9 %; todo cada 500, un 3.9 %. La tarjeta
-     de destino no está medida.
+   - **El costo** (5070 Ti, 8.77 s/it), con un target y sin Sim2: QSM y estabilidad cada 100 suman
+     un 19.4 % al entrenamiento, ~47 h en 100 000; PSNR cada 100 con QSM cada 500, un 5.9 %; todo
+     cada 500, un 3.9 %. Con tres targets y Sim2, como en el comando de abajo, el ADMM de una
+     evaluación QSM tardó 474–522 s, contra 85 con un target (134–159 en COSMOS y 340–363 en Sim2;
+     rama a 20 000, sin estabilidad): cada 500, eso solo suma ~11 % (derivado). `--val-snr` no
+     está medido aparte. La tarjeta de destino no está medida.
    - **Para evaluar el QSM cada 100** igual: `--eval-every 100 --meseta 50` (la misma paciencia,
      más caro), sin `--eval-qsm-cada`.
 
@@ -411,7 +426,8 @@ log lo avisa).
    - **Razón 10:** con 5, los escalones de ‖g‖ (5–12× la mediana, con la pérdida normal) se
      volvían rebobinados cada ~93 iteraciones. Con 10 hubo un rebobinado fuera del arranque en
      3 103 iteraciones. Con ruido ciego, la razón sana no pasó de 16.9 en 6 514 iteraciones, y el
-     estallido de `ciego-epocas-l32` fue de 1 389×.
+     estallido de `ciego-epocas-l32`, sin disyuntor, fue de 1 389× (bitácora, «Qué pasó con los
+     estallidos»).
    - **Sin cota absoluta:** sólo decidía antes de que se armara el relativo, y en 3D ahí traba la
      corrida. Los picos del arranque (10⁴–5·10⁷) se resuelven solos; rechazados, la red no se
      mueve y la racha rebobina a la iteración 3.
@@ -429,60 +445,66 @@ log lo avisa).
    | 500 × 10 (el comando de abajo) | 15 000, 20 000, 25 000, 30 000, 35 000 | 40 000 |
    | 100 × 10 (la propuesta) | 11 000, 12 000, 13 000, 14 000, 15 000 | 16 000 |
 
+   **La receta es la de las corridas ciegas vigentes (2026-10-25):** ruido ciego log-uniforme por
+   parche, σ ∈ [0.81, 55]/255 (`--sigma-min 0.81 --sigma-max 55 --sigma-log`), y épocas
+   (`--epocas`) sobre los 1 000 volúmenes de `lista_train_1000.txt`. Si el autor prefiere σ = 25
+   fijo, se quitan las tres `--sigma-*` (bitácora, «Abierto»).
+
+   **La evaluación QSM va a tres targets: `--qsm-target-std 0.15 0.02 0.05`, también en Sim2
+   (`--qsm-sim2`), con `--val-snr 25 50 100` y `--guardar-cada 500`.** Con el target fijo en 0.25,
+   el QSM de la ciega parecía empeorar al entrenar; con el mejor de varios, mejora. El mejor
+   depende del sujeto: 0.02 en COSMOS y 0.05–0.055 en Sim2, y 0.15 queda como el estable.
+   `best_qsm.pth` y la meseta usan el de menor NRMSE en COSMOS; Sim2 y `--val-snr` sólo se
+   registran. μ queda en 0.008 (bitácora, «Grid de target 0.02–0.06, μ y ADMM en dos rondas»). Con
+   un estado cada 500, cada checkpoint se puede reevaluar después a otros targets.
+
    ```bash
    sudo loginctl enable-linger $USER   # una vez: la unidad sigue al cerrar la sesión ssh
    loginctl show-user $USER -p Linger  # tiene que decir Linger=yes
    systemd-run --user --collect --unit tdv-3d-largo -p WorkingDirectory=$PWD bash -c \
        ".venv/bin/python -u train3d.py --out runs/3d-largo --iterations 100000 --hitos \
         --meseta 10 --meseta-desde 10000 --meseta-psnr --guard 10 --mascara-cerebro \
-        --seguimiento online --eval-every 100 --eval-qsm-cada 500 --guardar-cada 2500 \
+        --sigma-min 0.81 --sigma-max 55 --sigma-log --epocas \
+        --train-list datasets/ldm100k3d/lista_train_1000.txt \
+        --seguimiento online --eval-every 100 --eval-qsm-cada 500 --guardar-cada 500 \
+        --qsm-target-std 0.15 0.02 0.05 --qsm-sim2 datasets/qsm_sim2 --val-snr 25 50 100 \
         > runs/3d-largo.log 2>&1"
    systemctl --user status tdv-3d-largo   # ¿corre?
    tail -f runs/3d-largo.log
    systemctl --user stop tdv-3d-largo     # la para: se pierde lo posterior al último estado-<it>.pth
    ```
 
-   **La evaluación QSM va a tres targets (2026-10-25): `--qsm-target-std 0.15 0.02 0.05`, con
-   `--guardar-cada 500`.** Con el target fijo en 0.25, el QSM de la ciega parecía empeorar al
-   entrenar; con el mejor de varios, mejora. El mejor depende del sujeto: 0.02 en COSMOS y
-   0.05–0.055 en Sim2, y 0.15 queda como el estable. `best_qsm.pth` y la meseta usan el de menor
-   NRMSE, y μ queda en 0.008 (bitácora, «Grid de target 0.02–0.06, μ y ADMM en dos rondas»). Con
-   un estado cada 500, cada checkpoint se puede reevaluar después a otros targets.
-
-   ```bash
-   systemd-run --user --collect --unit tdv-3d-largo -p WorkingDirectory=$PWD bash -c \
-       ".venv/bin/python -u train3d.py --out runs/3d-largo --iterations 100000 --hitos \
-        --meseta 10 --meseta-desde 10000 --meseta-psnr --guard 10 --mascara-cerebro \
-        --seguimiento online --eval-every 100 --eval-qsm-cada 500 --guardar-cada 500 \
-        --qsm-target-std 0.15 0.02 0.05 > runs/3d-largo.log 2>&1"
-   ```
-
    `--collect` va siempre. Sin él, una unidad que falla queda «failed»: por ejemplo, con un corte
    por memoria o con el error de `--seguimiento online`. Relanzar con el mismo `--unit` falla
    hasta `systemctl --user reset-failed tdv-3d-largo`, justo al reanudar.
 
-   Cada 2 500 iteraciones queda un `estado-<it>.pth` (~47 MB; uno cada 100 serían ~53 GB), y
-   `--guardar-cada` no toca la aritmética. Tras un corte se lanza el mismo comando con `--reanudar`
-   y `>>`, para no pisar el log, con TODAS las banderas: las de la receta (`--guard`) y las del
-   calendario (`--meseta*`) se exigen iguales, y las libres (`--eval-every`, `--eval-qsm-cada`,
-   `--qsm-max-iter`, `--qsm-target-std`) vuelven a su default si faltan: cambiarlas a mitad de
-   corrida mezcla criterios en la meseta y en `best_qsm.pth`. La meseta sigue con su cuenta y sus mitades,
-   que viajan en el estado. Si una mitad llegara antes de tiempo, se rehace con una rama (otro
-   `--out`) desde el estado anterior a ella, con otra `--meseta`:
+   Cada 500 iteraciones queda un `estado-<it>.pth`: 47 MB en la 500 y 48 en la 10 000, porque
+   crece con la traza; en 100 000, 200 estados y ~11 GB (derivado). `--guardar-cada` no toca la
+   aritmética. Tras un corte se lanza el mismo comando con `--reanudar` y `>>`, para no pisar el
+   log, con TODAS las banderas: las de la receta (`--sigma-*`, `--epocas`, `--train-list`,
+   `--mascara-cerebro`) y las del calendario (`--meseta*`) se exigen iguales, y las libres
+   (`--eval-every`, `--eval-qsm-cada`, `--qsm-max-iter`, `--qsm-target-std`, `--qsm-sim2`,
+   `--val-snr`) vuelven a su default si faltan: cambiarlas a mitad de corrida mezcla
+   criterios en la meseta y en `best_qsm.pth`. La meseta sigue con su cuenta y sus mitades, que
+   viajan en el estado. Si una mitad llegara antes de tiempo, se rehace con una rama (otro `--out`)
+   desde el estado anterior a ella, con otra `--meseta`:
 
    ```bash
    systemd-run --user --collect --unit tdv-3d-largo -p WorkingDirectory=$PWD bash -c \
        ".venv/bin/python -u train3d.py --out runs/3d-largo --iterations 100000 --hitos \
         --meseta 10 --meseta-desde 10000 --meseta-psnr --guard 10 --mascara-cerebro \
-        --seguimiento online --eval-every 100 --eval-qsm-cada 500 --guardar-cada 2500 \
+        --sigma-min 0.81 --sigma-max 55 --sigma-log --epocas \
+        --train-list datasets/ldm100k3d/lista_train_1000.txt \
+        --seguimiento online --eval-every 100 --eval-qsm-cada 500 --guardar-cada 500 \
+        --qsm-target-std 0.15 0.02 0.05 --qsm-sim2 datasets/qsm_sim2 --val-snr 25 50 100 \
         --reanudar runs/3d-largo/estado-<it>.pth >> runs/3d-largo.log 2>&1"
    ```
 
    En `qsm.jsonl`, `nrmse_final_pct` y `nrmse_min_pct` son el mismo número, el del χ que devuelve
    el ADMM (salvo un ADMM no finito). El ~26 % sirve para reportar; lo que decide es la corrida
-   contra sí misma, en la meseta. `best_qsm.pth` se elige por ese número entre todas las
-   evaluaciones, incluidas las de antes de la 10 000, y con 200 evaluaciones es optimista: COSMOS
-   lo elige y lo mide.
+   contra sí misma, en la meseta. `best_qsm.pth` se elige por ese número, al mejor de los tres
+   targets, entre todas las evaluaciones, incluidas las de antes de la 10 000, y con 200
+   evaluaciones es optimista: COSMOS lo elige y lo mide.
 
    La alternativa son hitos fijos, `--hitos N−15000 N−10000 N−5000`, con N ≈ horas disponibles ·
    3 600 / (s/it), descontadas las evaluaciones; con hitos y meseta a la vez, las mitades se suman.
@@ -500,6 +522,10 @@ Ti.
 La arquitectura, el lr inicial, β y S no tienen bandera: están al principio de `train.py`,
 justificadas en sus notas finales. `--sigma` (25, en 0–255) fija también la σ de validación. En 3D,
 `--sigma-max` > 0 sortea σ ~ U(`--sigma-min`, `--sigma-max`) por parche (ruido ciego), y
+`--sigma-log` la hace log-uniforme (la receta vigente: `--sigma-min 0.81 --sigma-max 55
+--sigma-log`). `--epocas` recorre los volúmenes por épocas: un parche de cada uno por época, sin
+reemplazo. `--val-snr S…` valida además a SNR = pico/σ (pico 1), y `--qsm-sim2` corre la
+evaluación QSM también en Sim2 (`datasets/prepara_sim2.py`); ninguna de las dos elige checkpoints.
 `--eval-qsm-cada N` limita QSM y estabilidad a las validaciones múltiplo de N (y la última).
 `--qsm-max-iter` (25) es el techo de iteraciones del ADMM, que para antes si el NRMSE sube dos
 iteraciones seguidas. `--qsm-target-std` (0.06, el del oficial 2D) fija α: la desviación de α·χ₀
@@ -520,23 +546,24 @@ uno y cuenta el de menor NRMSE mínimo (`qsm/mejor_target`; cada uno en `qsm_t<t
 | costo de `referencia` / `rapido` | ~3× (2.98× en 100 000 iteraciones) | 16–21× por vóxel (estimado) |
 | costo de una iteración en `rapido` | 1 | ~20 (derivado): 40 000 iteraciones ≈ 8 recetas 2D |
 | `--checkpointing` | −78 % de memoria, +31 % de tiempo | ~5× menos memoria (derivado), +27 % de tiempo |
-| cota absoluta del disyuntor | 10⁴ | 10⁴·P³/(93²·3): 4.26·10⁴ a 48³ |
+| disyuntor | razón 5, cota absoluta 10⁴, respaldo cada 250 | razón 10, sin cota absoluta, respaldo cada 50 con el relativo armado |
 
 Costos: bitácora, «Costo y memoria» y «Lo que dejó el 2D», en el mismo modelo de tarjeta que la 2D.
 
-- **Cota absoluta.** Se escala con `P³` porque la pérdida suma sobre el parche y ‖g‖ crece con los
-  valores sumados (un supuesto, apoyado en lo medido entre 1 y 3 canales); sin escalar, el arranque
-  la habría cruzado.
+- **Disyuntor.** Por qué cambia en 3D: «Llevar el entrenamiento 3D a otra máquina», paso 6, «El
+  disyuntor 3D».
 - **Máscara de cerebro.** LDM_100k conserva el cráneo: sólo el 4 % de los parches de 48³ que pasan
   el filtro de tejido cae entero en el cerebro. `--mascara-cerebro` usa sólo cubos dentro de
   máscaras (deepbet ∩ HD-BET, [`mascaras_ldm100k3d.py`](datasets/mascaras_ldm100k3d.py)), que cubren
   el 66 % del cerebro.
-- **Validación QSM.** Reconstruye el sujeto de COSMOS con un ADMM plug-and-play (Venkatakrishnan et
-  al., 2013) con la red como denoiser y el protocolo de Milovic et al. (2021) en CIB-UC-QSM/TDV,
-  tres cortes como RGB, extendido a los tres ejes. Desde el 2026-10-18 lleva las máscaras de ese
-  pipeline (el solver de `../tdv`): la entrada y la salida de la red pasan por la máscara del
-  cerebro en cada iteración, y el mapa final también. Con ellas y la red 2D oficial reproduce su
-  25.94 % (25.9393 %); sin ellas reproducía su 26.89 %.
+- **Validación QSM.** Reconstruye el sujeto de COSMOS (160³), y con `--qsm-sim2` también Sim2,
+  con un ADMM plug-and-play (Venkatakrishnan et al., 2013) con la red como denoiser: el protocolo
+  de `../tdv/wTDV_QSM_torch_3d.py` (Milovic et al., 2021) con k = 1, la red 3D sobre el volumen
+  entero de una vez. k = 3, la red 2D en tres cortes como RGB en los tres ejes, es el pseudo-3D del
+  autor y sólo se usa para reproducir su 25.94 %. Desde el 2026-10-18 lleva las
+  máscaras de ese pipeline (el solver de `../tdv`): la entrada y la salida de la red pasan por la
+  máscara del cerebro en cada iteración, y el mapa final también. Con ellas, k = 3 y la red 2D
+  oficial reproduce su 25.94 % (25.9393 %); sin ellas reproducía su 26.89 %.
 
 ## Cómo funciona
 
@@ -596,7 +623,8 @@ mecanismo posible y lo medido; la causa de un evento no está identificada.
 - **Rebobinado.** El rechazo llega un paso tarde: ‖g‖ se mide en pesos que ya movieron los lotes
   aceptados. Tras 25 rechazos seguidos, la ejecución vuelve al último respaldo en memoria (pesos,
   momentos de Adam y mediana) y sigue con lotes nuevos, sin retroceder el lr. Hay un respaldo cada
-  250 iteraciones o más; el primero, en la 3.
+  250 iteraciones o más; el primero, en la 3. En 3D: razón 10, sin cota absoluta y respaldo cada 50
+  iteraciones con el relativo armado («Llevar el entrenamiento 3D a otra máquina», paso 6).
 
 ## Resultados y alcance
 
@@ -614,12 +642,14 @@ artículo.
 
 - **Alcance.** Una ejecución completa, más la semilla 0, cortada en la 66 000 con 31.526 dB (igual
   que la 1 en la 64 000); evaluadas sólo en CBSD68, que también elige `best.pth` (en la 1, el
-  último). El efecto del disyuntor sobre la tasa de fallos no está medido. El 3D sólo tiene pruebas
-  cortas: la más larga, la rama `prep3d-g10-s2-2500`, de 2 500 iteraciones.
-- **QSM.** Un solo sujeto, que también ajusta el solver y elige `best_qsm.pth`: su NRMSE es
-  optimista. El prior se entrena sobre magnitud T1 y se aplica a `χ`, con signo y otra amplitud, y
-  la red entera se usa como denoiser, no `R` como regularizador: las garantías del artículo no se
-  trasladan.
+  último). El efecto del disyuntor sobre la tasa de fallos no está medido. Del 3D, la más larga es
+  `ciego-epocas-l32-10k`: 10 000 iteraciones (ruido ciego log-uniforme, épocas, lote 32), una
+  semilla. Su rama `ciego-epocas-l32-20k` sigue hasta la 20 000 (bitácora, «La rama a 20 000»). En
+  3D no hay dispersión entre semillas medida.
+- **QSM.** COSMOS elige `best_qsm.pth` y el target entre varios: su NRMSE es optimista. Sim2 se
+  registra sin elegir, pero con los dos se fijaron μ y la lista de targets. El prior se entrena
+  sobre magnitud T1 y se aplica a `χ`, con signo y otra amplitud, y la red entera se usa como
+  denoiser, no `R` como regularizador: las garantías del artículo no se trasladan.
 - **Diferencias con el artículo.** Los valores iniciales de `T` y `λ`, que no publica, se eligieron
   aquí; `λ` separado de `T` y la cota de norma de la primera convolución salen del código de los
   autores. El artículo da `T* = 0.172` para el modelo gris; el checkpoint guarda 0.0172.

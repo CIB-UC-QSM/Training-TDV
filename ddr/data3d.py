@@ -56,6 +56,7 @@ MARGEN_CEREBRO = 1     # cubos 48^3 que tocan lo excluido por la de con TTA: 0.3
 # --- CARGA -----------------------------------------------------------------------------------
 
 def _carga(path: str | Path, dtype: type) -> np.ndarray:
+    """Un `.npy` `[D, H, W]` en `dtype`, sin copiar si ya lo está; otra forma es un error."""
     a = np.load(path)
     if a.ndim != 3:
         raise ValueError(f"{Path(path).name}: forma {a.shape}, se esperaba [D, H, W]")
@@ -157,14 +158,9 @@ def add_noise_ciego(y: torch.Tensor, sigma_min: float, sigma_max: float, generat
     """Ruido gaussiano con sigma ~ U(sigma_min, sigma_max) por muestra (eje 0), en las unidades de
     `add_noise`. Devuelve `(ruidosa, sigmas)`.
 
-    Con `log`, sigma es log-uniforme en [sigma_min, sigma_max] (pide sigma_min > 0): cada octava de
-    σ recibe la misma cantidad de parches, en vez de que los σ chicos sean raros. Con
-    `fraccion_limpias` p > 0, cada muestra queda sin ruido (sigma = 0) con probabilidad p.
-
-    Del mismo generador salen primero los sigmas, después (con p > 0) el sorteo de las limpias y
-    al final el ruido: con `sigma_min == sigma_max` el ruido NO es el de `add_noise` con ese sigma,
-    porque el sorteo de los sigmas va antes. Con `log` y p apagados, el resultado es bit a bit el
-    de antes de que existieran.
+    Con `log`, sigma es log-uniforme en [sigma_min, sigma_max] (pide sigma_min > 0). Con
+    `fraccion_limpias` p > 0, cada muestra queda sin ruido (sigma = 0) con probabilidad p. El orden
+    de los sorteos, en el bloque final (RUIDO CIEGO).
     """
     if sigma_min > sigma_max:
         raise ValueError(f"sigma_min {sigma_min} > sigma_max {sigma_max}")
@@ -428,9 +424,13 @@ class VolumeDataset3D(Dataset):
 ---------------------------------------------------------------------------------------------------
 
 # --- RUIDO CIEGO -----------------------------------------------------------------------------
-# Un sigma por parche, uniforme en [sigma_min, sigma_max], en niveles de 8 bits como `add_noise`:
-# U(0, 55) es la convención de DnCNN-B. Busca un regularizador para todo el rango en vez de uno
-# por sigma: es la mejora candidata que apunta a quitar el reescalado de `evaluate.py --sigma-ref`
-# y el `alpha` del solver ADMM-QSM (AGENTS.md, «Mejoras candidatas»), sin medir todavía. Como
-# `add_noise`, se sortea en CPU con el generador de la corrida.
+# Un sigma por parche en [sigma_min, sigma_max], en niveles de 8 bits como `add_noise`: U(0, 55)
+# es la convención de DnCNN-B. Con `log`, log-uniforme: cada octava de σ recibe la misma cantidad
+# de parches, en vez de que los σ chicos sean raros. Busca un regularizador para todo el rango en
+# vez de uno por sigma. No quita el `alpha` del ADMM-QSM: la red no es escala-equivariante y α se
+# elige por checkpoint (AGENTS.md, «Lo que ya se sabe»).
+# Del mismo generador salen primero los sigmas, después (con p > 0) el sorteo de las limpias y al
+# final el ruido: con `sigma_min == sigma_max` el ruido NO es el de `add_noise` con ese sigma,
+# porque el sorteo de los sigmas va antes. Como `add_noise`, se sortea en CPU con el generador de
+# la corrida.
 '''

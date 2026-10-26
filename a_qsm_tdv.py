@@ -2,8 +2,8 @@
 """Convierte un `.pth` de `train3d.py` (TDV 3D de `ddr/`) al `checkpoint.pt` + `report.json` que
 `_load_regularizer` de ../QSM-TDV carga con `strict=True`.
 
-    python a_qsm_tdv.py runs/humo3d/tronco/best.pth salida/          # salida/checkpoint.pt y report.json
-    python a_qsm_tdv.py best.pth salida/ --tau-data 0.5              # el tau del dato, recalibrado para QSM
+    python a_qsm_tdv.py runs/<corrida>/best_qsm.pth salida/   # salida/checkpoint.pt y report.json
+    python a_qsm_tdv.py best.pth salida/ --tau-data 0.5       # el tau del dato, recalibrado para QSM
 
 Ojo: la conversión NO es exacta. Los nombres y los pesos se mapean uno a uno, pero la bajada de
 escala no es el mismo operador en el borde del volumen: `ddr/conv3d.py` desenfoca el KERNEL

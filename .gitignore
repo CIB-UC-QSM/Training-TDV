@@ -52,7 +52,8 @@ scripts/
 docs/papers/*.pdf
 
 # Figuras de las etapas: pesan (~33 MB) y se rehacen con sus scripts. Quedan locales.
-docs/figuras/
+docs/Sanity Check/*
+!docs/Sanity Check/resumen/
 
 # Cachés
 .pytest_cache/

@@ -7,7 +7,7 @@ PDFs en `docs/papers/`, notas destiladas en `docs/papers/notes/`.
 
 | Paper | Nota | De qué sirve |
 |---|---|---|
-| **TDV: A Stable Regularizer for Inverse Problems** (Kobler et al., 2020) | [notes/tdv-stable-regularizer-2020.md](notes/tdv-stable-regularizer-2020.md) | **El paper de referencia.** Arquitectura, formulación de control óptimo, y la receta de entrenamiento exacta (sec. 5.1) que hay que reproducir |
+| **TDV: A Stable Regularizer for Inverse Problems** (Kobler et al., 2020) | [notes/tdv-stable-regularizer-2020.md](notes/tdv-stable-regularizer-2020.md) | **El paper de referencia.** Arquitectura, formulación de control óptimo, y la receta de entrenamiento exacta (sec. 5.1), reproducida en 2D: 31.547 dB en CBSD68 a σ = 25, contra 31.53 publicados |
 | **TDV for Linear Inverse Problems** (Kobler et al., CVPR 2020) | [notes/tdv-linear-inverse-problems-2020.md](notes/tdv-linear-inverse-problems-2020.md) | El paper **anterior** de los mismos autores. Su receta **difiere**: 96×96, 10⁶ pasos sin schedule, ν=9. Leerla antes de citar cualquier número, para no confundir las dos |
 | **TDV Regularization for Improved Iterative QSM** (Milovic et al., ISMRM 2021) | [notes/tdv-qsm-iterative-2022.md](notes/tdv-qsm-iterative-2022.md) | Origen del proyecto: TDV color preentrenado dentro de ADMM-QSM, con los 3 canales RGB usados como 3 cortes |
 | **A Fair Comparison in DL-Based QSM Reconstruction** (Oh et al., 2025) | [notes/qsm-deep-learning-comparison-2025.md](notes/qsm-deep-learning-comparison-2025.md) | Estándar metodológico: por qué la validación RGB no es opcional y cómo reportar resultados sin engañarse |

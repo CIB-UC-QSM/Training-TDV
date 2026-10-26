@@ -2,9 +2,9 @@
 
 Training-TDV entrena Total Deep Variation (Kobler et al., 2022) en 3D (`train3d.py`) para usarlo
 como prior de un ADMM plug-and-play en QSM. Entrena sobre volúmenes T1 con cráneo
-(`datasets/ldm100k3d`, no QSM) y valida con PSNR, una reconstrucción QSM de COSMOS y el número de
-estabilidad PnP. La corrida larga la lanza el autor en otra máquina. **La fase 2D está cerrada**:
-`train.py` (`t8delta-100k-s1`, 31.547 dB en CBSD68 a σ = 25, contra 31.53 publicado) queda porque
+(`datasets/ldm100k3d`, no QSM) y valida con PSNR (también a varios SNR), QSM en COSMOS (que
+elige) y en Sim2 (que no) y, opcional, el número de estabilidad PnP. La corrida larga la lanza el
+autor en otra máquina. **La fase 2D está cerrada**: `train.py` (`t8delta-100k-s1`, 31.547 dB en CBSD68 a σ = 25, contra 31.53 publicado) queda porque
 `train3d.py` importa su receta, y lo que el 2D dejó vigente está en la bitácora, «Lo que dejó el 2D».
 
 Aquí va sólo lo que no está en otro lado: uso y teoría, en el README; estado, decisiones y qué
@@ -14,8 +14,8 @@ conserva: lo que de ella sigue valiendo está resumido en esos documentos.
 
 ## Por dónde empezar
 
-- **Qué pasa y qué sigue:** `docs/bitacora.md`, que es corta y se lee entera: «Estado», «La
-  corrida larga», «Abierto» y las entradas fechadas del final, que van por delante.
+- **Qué pasa y qué sigue:** `docs/bitacora.md`, que se lee por «Estado», «La corrida larga»,
+  «Abierto» y las entradas fechadas del final, que van por delante.
 - **Qué corre ahora:** `systemctl --user list-units 'tdv-*'` y `nvidia-smi`; la corrida larga, en
   W&B (proyecto `training-tdv3d`) o en su `--out`.
 - **Si una idea ya se probó:** «Lo que no sirve», abajo.
@@ -31,7 +31,9 @@ conserva: lo que de ella sigue valiendo está resumido en esos documentos.
   schema, cuándo termina); y paralelizar ahorra tiempo real o da cobertura que una sesión no da.
   No sirven para corridas ni barridos de GPU, búsquedas puntuales ni decisiones en cadena.
   Antes de lanzar, una línea al autor con qué se paraleliza y cuántos agentes (tope 10);
-  `pipeline()` por defecto y esfuerzo bajo en las etapas mecánicas.
+  `pipeline()` por defecto, y cada agente con `effort` explícito, el mínimo que le alcance para
+  hacerlo bien: `low` lo mecánico, `medium` leer y juzgar, `high` sólo para verificar una
+  conclusión importante (`~/.claude/CLAUDE.md`).
 - **Python de más de ~20 líneas va a un archivo**, no pegado en un comando. Una medición nueva deja
   su script en `scripts/` y su número, con el script y la fecha, en una entrada de la bitácora.
 - **Una corrida la lanza el autor, o el agente si el autor lo pide en ese turno**, mirando antes
@@ -134,9 +136,9 @@ reglas por número: no renumerar sin un `grep -rn` sobre `.claude/`, `scripts/` 
   Dependen de COSMOS, `--qsm-max-iter`, `--qsm-target-std` y `--estabilidad-lado`, libres al
   reanudar: cambiarlos a mitad de corrida mezcla criterios, y nada lo verifica.
 - **`(T/S)·ρ(∇²R)` es un índice, no una garantía.** `*INESTABLE*` usa el umbral 2
-  (`ddr/qsm3d.py:84`). Por debajo de 2 un paso también expande, por curvatura negativa; y en 2D el
-  índice no predijo la convergencia del ADMM en ningún sentido (bitácora, «Lo que dejó el 2D»).
-  Estable no es convergente.
+  (`UMBRAL_ESTABILIDAD`, `ddr/qsm3d.py`). Por debajo de 2 un paso también expande, por curvatura
+  negativa; y en 2D el índice no predijo la convergencia del ADMM en ningún sentido (bitácora,
+  «Lo que dejó el 2D»). Estable no es convergente.
 - **A QSM se pasa `best_qsm.pth`, elegido por el NRMSE mínimo del ADMM** en COSMOS. El ADMM de la
   evaluación tiene un techo de 25 iteraciones, sin el corte por TOL y CORTE del autor (no
   calibrados para la red 3D), y para si el NRMSE sube dos iteraciones seguidas, devolviendo el
@@ -161,17 +163,21 @@ reglas por número: no renumerar sin un `grep -rn` sobre `.claude/`, `scripts/` 
   `runs/3d-largo.log`, fuera de `--out`). W&B es una vista. `scripts/resumen_ventana_3d.py`
   resume varias.
 - **La corrida larga va en otra máquina** (RTX PRO 6000 Blackwell Max-Q de 96 GB, sin probar
-  allí): procedimiento y comando en el README, «Llevar el entrenamiento 3D a otra máquina»; lo
-  fijado y lo abierto, en la bitácora. Como servicio se lanza con `.venv/bin/python`, no con
-  `uv run`: el `PATH` de una unidad systemd no incluye `~/.local/bin`. Al vigilarla:
+  allí): procedimiento y comando en el README, «Llevar el entrenamiento 3D a otra máquina», con la
+  receta de las corridas ciegas vigentes (σ log-uniforme en [0.81, 55]/255, `--epocas`, lista de
+  1 000; si el autor prefiere σ fijo, se cambia: bitácora, «Abierto»); lo fijado y lo abierto, en
+  la bitácora. Como servicio se lanza con `.venv/bin/python`, no con `uv run`: el `PATH` de una
+  unidad systemd no incluye `~/.local/bin`. Al vigilarla:
   `train/rechazos`, `train/rebobinados`, `train/iteracion_efectiva`, `train/T` lejos de 0,
   `qsm/fallo` (si fallan todas las evaluaciones QSM, la meseta no actúa y el lr queda en 4e-4
   hasta el techo), `qsm/nrmse_min_pct` (lo que eligen `best_qsm.pth` y la meseta),
   `qsm/iteraciones` y `meseta/*`; `qsm/estabilidad`, como diagnóstico.
 - **Alertas de W&B:** llegan por correo o Slack si la cuenta tiene encendidas las «Scriptable run
-  alerts». Salen en cuatro casos:
+  alerts». Salen en cinco casos:
   - cada rebobinado;
   - `TRABADA`: dos rebobinados seguidos al mismo respaldo;
+  - la red empeora la entrada: el PSNR de validación queda bajo el de la ruidosa (aunque sea la
+    primera validación);
   - el PSNR de validación 3 dB o más bajo el mejor;
   - el ADMM devuelve χ0, es decir, su mínimo cae en la iteración 0.
 
@@ -211,23 +217,30 @@ Medido en 2D (BSDS400 color, σ = 25) salvo aviso; en 3D vale como supuesto.
   ×1.27 (el oficial) a ×23.9 en el punto QSM, y de ellas sólo el oficial hizo converger el ADMM;
   el ciego expande ×3.13 y converge igual (bitácora, «Lo que dejó el 2D»).
 - **El solver 2D de QSM** (`../tdv/wTDV_QSM_torch.py`) usa la red entera, `vn(z·α, z·α)/α`, sin
-  `T` ni `λ`; la evaluación 3D de `ddr/qsm3d.py` hace lo mismo, con α fijado para que la primera
-  reconstrucción tenga desviación 0.06 en el cerebro (4.86 en COSMOS; `--qsm-target-std`).
+  `T` ni `λ`; la evaluación 3D de `ddr/qsm3d.py` hace lo mismo con k = 1, la red 3D sobre el
+  volumen entero (k = 3 es el pseudo-3D del autor, la red 2D en los tres ejes), y con
+  α = target_std/std(χ₀ en la máscara), fijo desde t = 0 (`--qsm-target-std`; el default, 0.06,
+  da α = 4.86 en COSMOS).
 - **La red no es escala-equivariante** (15–28 %): la amplitud de χ que ve la red importa.
-- **α se elige por checkpoint:** con el target fijo en 0.25, el QSM de la ciega parecía empeorar
-  al entrenar; con el mejor de {0.02, 0.06, 0.25} mejora, y el mejor depende del sujeto (0.02 en
-  COSMOS, 0.06 en Sim2). Se evalúa con varios `--qsm-target-std` y cuenta el de menor NRMSE.
+- **La red vigente es ciega y no quita α** (3D: σ log-uniforme en [0.81, 55]/255 por parche,
+  `--epocas`, lote 32). **α se elige por checkpoint:** con el target fijo en 0.25, el QSM de la
+  ciega parecía empeorar al entrenar; con el mejor target mejora (COSMOS a 0.02: 35.1 % en la 496,
+  26.7 % en la 10 000; Sim2 a 0.05–0.055: ~34 %, con 100 iteraciones de ADMM), y el mejor depende
+  del sujeto. Se evalúa a 0.15, 0.02 y 0.05 y cuenta el de menor NRMSE mínimo
+  (`qsm/mejor_target`).
 - **En 3D, α mueve el ADMM:** con la control y con `prep3d-g10-s2-2500`, en COSMOS y en Sim2,
   target_std 0.06 fue el peor de {0.02, 0.06, 0.25, 0.35}, 2.6–7.7 pp de NRMSE sobre 0.25 (HFEN,
   igual). El mejor depende del dato: 0.35 en COSMOS y en Sim2 con el campo rehecho (E1), 0.02 en
   Sim2, por la forma de su desajuste. Con 0.06 la control agranda el error del cono en cada
-  pasada; con 0.25–0.35, lo achica (bitácora, «Etapa 2» y E1).
+  pasada; con 0.25–0.35, lo achica (bitácora, «Etapa 2» y E1). Son redes de σ fijo: con la ciega
+  vigente, el mejor es 0.02 en COSMOS y 0.05–0.055 en Sim2 (el punto anterior).
 - **Una red 3D de σ fijo (la control, 1 500 it), aplicada sin reescalar la entrada,** deja la
   salida en ~30 dB a SNR 25–100 (de la media; 79–316 de pico), 8–20 dB peor que la entrada; con el reescalado del paper
   (25/σ) la salida sube a 33.5–43.5 dB, pero sigue 4.5–8.3 dB peor que la entrada, con factores
   de 7.8–31 fuera del rango del paper. Bajando T en inferencia (sin reescalar), el óptimo baja con
-  el ruido (0.0125 a SNR 25, 0.0031 a 50, ≤ 0.0016 a 100, contra 0.0963 entrenado) y la ganancia
-  vuelve a ser positiva, aunque chica: +1.6, +0.5 y +0.1 dB (bitácora, Etapa 1).
+  el ruido (0.0125 a SNR 25 de la media, 79 de pico; 0.0031 a 50, 158; ≤ 0.0016 a 100, 316;
+  contra 0.0963 entrenado) y la ganancia vuelve a ser positiva, aunque chica: +1.6, +0.5 y
+  +0.1 dB (bitácora, Etapa 1).
 - **Recupera el rebobinado, no el rechazo;** cuesta lo que descarta (0.4 % en la réplica 2D).
 
 ## Lo que no sirve
@@ -244,7 +257,8 @@ Probado y cerrado en las fases anteriores; no se reabre sin un mecanismo nuevo.
 - **Para el disyuntor:** otro detector sobre `‖g‖`, la cota absoluta como prevención, rechazar sin
   rebobinar, abortar tras N rechazos y tocar la ventana ante un rebobinado repetido (era un alias
   del respaldo de Adam, ya arreglado). En 3D, tampoco sirven la cota en el arranque, que traba la
-  corrida, ni entrenar sin disyuntor: a `ciego-epocas-l32` nada le frenó el estallido.
+  corrida, ni entrenar sin disyuntor: a `ciego-epocas-l32` (carpeta borrada; bitácora, «Qué pasó
+  con los estallidos») nada le frenó el estallido.
 - **Como criterio de muerte o de corte:** `τ·L > 2` (el oficial opera a 4.8), `growth`, `amp₀`,
   `‖Δθ‖`, extrapolar `T` o el hazard; `σ_max` del adjunto separa a posteriori, pero no avisa.
 - **Como causa de los estallidos:** el port, la inicialización, `torch.compile`, el checkpointing,
@@ -256,17 +270,15 @@ Probado y cerrado en las fases anteriores; no se reabre sin un mecanismo nuevo.
   así se va después del mínimo (bitácora, «Etapa 2»). Tampoco una target_std robusta (MAD,
   percentiles: da casi el mismo α en COSMOS y Sim2), α según el error del dato (α_MAP cae en la
   joroba de los peores) ni las fuentes fuertes de Sim2 como causa de su α bajo: es la forma de
-  su desajuste (bitácora, «E0» y E1).
+  su desajuste (bitácora, «E0» y E1). Ni α por el ruido estimado de χ₀ (la MAD de wavelets Haar
+  ve el 20–30 % de su error, que es sobre todo suave) ni por el principio de discrepancia (toda
+  reconstrucción deja menos residuo que el χ verdadero) (bitácora, «¿α sin GT?»).
 - **Para la convergencia del ADMM en 3D:** pasar a mitad de camino de un target bajo (denoiser
   fuerte) a uno alto: el ADMM se va a la solución del target alto y el update sube a 6–8 %
   (bitácora, «ADMM en dos rondas»).
 
 ## Mejoras candidatas
 
-- **Entrenar ciego al ruido**, con σ sorteado por parche (`--sigma-max 55`, ya es bandera en 3D):
-  quitaría el reescalado α del ADMM-QSM. En 2D, `ciego2d-35k` bajó el número de estabilidad en QSM
-  de 23.2 a 2.14 y el ADMM converge, pero a 33.18 % contra 27.34 % del oficial; su control con
-  σ = 25 y el mismo calendario no se corrió. La corrida larga 3D va con σ = 25 fijo.
 - **Baratas, con condiciones:** EMA (su estado viaja con el respaldo), `channels_last`, AdamW con
   `T` y `λ` fuera del weight decay (si no, los empuja a su pared; derivado, no medido).
 - **Qué NO tocar.** ReLU, BatchNorm y autoatención: README, «El esquema». **LayerNorm:** su
@@ -277,13 +289,13 @@ Probado y cerrado en las fases anteriores; no se reabre sin un mecanismo nuevo.
 ## Lo que no está en un clon
 
 `scripts/`, `.claude/` (skills `tanda`, `afirmar`, `huella`, `papers`), `CLAUDE.md`, `runs/`, las
-imágenes de `datasets/` y las figuras de `docs/figuras/` (pesan) existen sólo en la máquina del
-autor.
+imágenes de `datasets/` y `docs/Sanity Check/` salvo su `resumen/` (las figuras pesan) existen sólo
+en la máquina del autor.
 
 - Un worktree se crea desde `HEAD` (`git worktree add -b <rama> <ruta> HEAD`; `origin/main` puede
   ir atrás) y se le enlazan `runs`, `datasets/bsds500/images` (sin ella, `test_reproduction.py` se
-  saltea), `datasets/ldm100k3d/images`, `datasets/ldm100k3d/mascaras` y `datasets/qsm_cosmos` (sin
-  ella, la evaluación QSM se apaga).
+  saltea), `datasets/ldm100k3d/images`, `datasets/ldm100k3d/mascaras`, `datasets/qsm_cosmos` (sin
+  ella, la evaluación QSM se apaga) y `datasets/qsm_sim2` (para `--qsm-sim2`).
 - `scripts/guardia_tanda.py`, el hook de la regla 2: con cualquier `train.py` o `train3d.py` vivo
   (también la suite, que lanza corridas cortas), bloquea escribir **cualquier** `train.py`,
   `train3d.py` o `runs/*/plan.sh`, también de un worktree o de `../QSM-TDV`.

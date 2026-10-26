@@ -45,9 +45,9 @@ __all__ = [
 MODOS = ("auto", "online", "offline", "no")
 PROYECTO = "training-tdv3d"       # supuesto: el nombre lo decide el autor, con la bandera
 HOST = "https://api.wandb.ai"     # el de wandb 0.30 cuando WANDB_BASE_URL no dice otro
-# Cuánto espera `wandb.init` antes de rendirse; el default de wandb es 90 s. Supuesto: online no
-# se midió (no hay credencial en esta máquina); offline, la primera apertura del proceso tarda
-# 0.29 s y las demás 0.046 (medido el 2026-10-12).
+# Cuánto espera `wandb.init` antes de rendirse; el default de wandb es 90 s. Supuesto: la apertura
+# online normal no se midió; offline, la primera apertura del proceso tarda 0.29 s y las demás
+# 0.046 (medido el 2026-10-12).
 INIT_TIMEOUT = 30.0
 
 
@@ -109,6 +109,7 @@ ARCHIVO = "seguimiento.json"
 
 
 def _lee_json(ruta: Path) -> dict | None:
+    """El json de `ruta`, o None si no está o no se puede leer (con un aviso)."""
     if not ruta.exists():
         return None
     try:
@@ -380,8 +381,7 @@ def metricas_traza(traza: np.ndarray, it: int) -> dict[str, float]:
 # Offline, la corrida vive en `<out>/wandb/offline-run-<fecha>-<id>/`, un directorio por cada vez
 # que se abrió (con `-1`, `-2`... si dos empiezan en el mismo segundo); `wandb sync
 # <out>/wandb/offline-run-*-<id>*` los sube en orden de inicio (lo dice `wandb sync --help` de
-# 0.30; sin servidor, no verificado). Esta máquina no tiene credencial (2026-10-12): acá `auto` es
-# offline.
+# 0.30; sin probar).
 
 ---------------------------------------------------------------------------------------------------
 
@@ -407,8 +407,8 @@ def metricas_traza(traza: np.ndarray, it: int) -> dict[str, float]:
 # La corrida nueva no copia la historia previa: una rama empieza en `desde` + 1, y lo anterior
 # está en la del tronco (padre_id); un linaje descartado, en la descartada. La historia entera
 # está en `traza.npy`, que la rama hereda del tronco.
-# Sin verificar (no hay servidor): que online, al reabrir, wandb acepte una config con valores
-# cambiados (`reanudar`, `iterations`), y que los extremos del resumen sobrevivan a una reapertura.
+# Sin probar: que online, al reabrir, wandb acepte una config con valores cambiados (`reanudar`,
+# `iterations`), y que los extremos del resumen sobrevivan a una reapertura.
 
 ---------------------------------------------------------------------------------------------------
 
@@ -434,8 +434,9 @@ def metricas_traza(traza: np.ndarray, it: int) -> dict[str, float]:
 #     5.8 s). Un estado pesa ~51 MB en la 40 000 (docs/porque-del-codigo.md, RECETA 3D). Se
 #     eligió --log-every porque la traza ya tiene todas las filas y W&B muestra lo mismo que el
 #     log.
-#   - en cada validación, `registra` con val/* y `registra_imagenes` con val/denoising; en cada
-#     evaluación QSM, qsm/* y qsm/reconstruccion.
+#   - en cada validación, `registra` con val/* (y val_snr<SNR>/* con --val-snr) y
+#     `registra_imagenes` con sus láminas; en cada evaluación QSM, qsm/* y qsm/reconstruccion, y
+#     con Sim2, qsm_sim2/* y qsm_sim2/reconstruccion (los nombres, en MÉTRICAS).
 #   - al final, después de `estado.json`, `resumen(run, <estado.json>)` y `cierra(run)`.
 # Las banderas de `train3d.py` (--seguimiento, --wandb-proyecto) están en LIBRES: reanudar un
 # estado anterior a ellas o cambiar el modo no lo rechaza `--reanudar`. Sus tests, con `no`, no
@@ -447,29 +448,29 @@ def metricas_traza(traza: np.ndarray, it: int) -> dict[str, float]:
 ---------------------------------------------------------------------------------------------------
 
 # --- MÉTRICAS --------------------------------------------------------------------------------
-# Los nombres, para que el integrador use éstos y no otros:
+# Las train/*, de este archivo:
 #   train/loss (col. 0), train/T (1), train/dT (2, ∂L/∂T), train/lambda (3), train/dlambda (4),
 #   train/grad_norm (5, ‖g‖ sin recortar), train/grad_mediana (6, de la ventana del disyuntor),
 #   train/amp (7, sólo con --guard-amp), train/grad_norm_micro (10), train/lr (11),
 #   train/iteracion_efectiva (12), train/sigma_medio (13), train/rechazos y train/rebobinados
-#   (8 y 9 acumuladas), train/grad_razon (5 / 6), más train/grad_norm_max, train/s_por_it y
-#   train/vram_pico_gib, que no son una fila de la traza. ‖g‖ se lee contra la mediana, nunca en
-#   absoluto (AGENTS.md): por eso grad_razon.
-#   val/psnr, val/psnr_tejido, val/psnr_cerebro (sólo con las máscaras de `mascaras/val`): los de
-#   `evaluate_denoising3d`. val/nrmse_pct, val/nrmse_pct_tejido: el NRMSE por volumen, en todo el
-#   recorte y en tejido, promediado entre volúmenes como el PSNR; `evaluate_denoising3d` lo
-#   calcula con `nrmse_pct` de `ddr/qsm3d.py`, la misma definición, sin una segunda copia.
-#   qsm/nrmse_final_pct, qsm/nrmse_min_pct, qsm/iter_min, qsm/iteraciones, qsm/alpha,
-#   qsm/segundos: las claves nrmse_final, nrmse_min, it_min, iteraciones, alpha y segundos de lo
-#   que devuelve `qsm3d.admm_wtdv`; `motivo` ("corte", "max_iter", "no_finito") es texto y va al
-#   log, a `qsm.jsonl` y al resumen, no a la historia. qsm/fallo: 1 si la evaluación levantó, 0
-#   si no.
-#   Imágenes: val/denoising y qsm/reconstruccion, las láminas `lamina_denoising` y `lamina_qsm`
-#   de `ddr/qsm3d.py`, en uint8 y con rango fijo ([0, 1] en T1, ±0.1 ppm en QSM).
-# NRMSE = 100 · ‖x̂ − y‖ / ‖y‖, el `rmse` de `../tdv/ddr/utils.py:91-99` (26.89 % final en
-# `../tdv/wTDV_QSM_torch_3d.py:244`). En un volumen y con la misma máscara no agrega información
-# al PSNR: NRMSE = 100 · R · 10^(−PSNR/20) / rms(y), con R el rango de los datos (test). Lo que
-# cambia es el promedio entre volúmenes, que con NRMSE pesa más a los de poca energía. En
-# validación sirve para hablar en las unidades de QSM; en QSM es LA métrica, porque la
-# susceptibilidad tiene signo y no tiene rango: el PSNR no está definido.
+#   (8 y 9 acumuladas), train/grad_razon (5 / 6), más train/grad_norm_max, train/s_por_it,
+#   train/vram_pico_gib y, con --epocas, train/epoca, que no son una fila de la traza. ‖g‖ se lee
+#   contra la mediana, nunca en absoluto (AGENTS.md): por eso grad_razon.
+# Las demás las arma `train3d.py`: val/* en `valida_denoising` y `valida_estabilidad`,
+# val_snr<SNR>/* en `valida_niveles`, qsm/* y qsm_sim2/* en `fila_y_registro` (las claves de
+# `admm_wtdv` y de `metricas_chi`), y meseta/* en `aplica_meseta`. Con varios --qsm-target-std,
+# qsm/* es el del target de menor NRMSE mínimo (qsm/mejor_target) y cada uno va en
+# qsm_t<target>/* (0.15 → qsm_t015); igual qsm_sim2. qsm/fallo vale 1 si la evaluación levantó.
+# `motivo` ("corte", "max_iter", "no_finito", "empeora") es texto y va al log, a `qsm.jsonl` y al
+# resumen, no a la historia.
+# Las imágenes son las láminas `lamina_denoising` y `lamina_qsm` de `ddr/qsm3d.py`, en uint8 y con
+# rango fijo ([0, 1] en T1, ±0.1 ppm en QSM).
+# NRMSE = 100 · ‖x̂ − y‖ / ‖y‖, el `rmse` de `../tdv/ddr/utils.py:91-99`, con el que el autor
+# reporta 25.94 % en COSMOS (`ddr/qsm3d.py`, PROTOCOLO DEL AUTOR). val/nrmse_pct* sale de
+# `nrmse_pct` de `ddr/qsm3d.py`, la misma definición, promediado entre volúmenes como el PSNR.
+# En un volumen y con la misma máscara no agrega información al PSNR:
+# NRMSE = 100 · R · 10^(−PSNR/20) / rms(y), con R el rango de los datos (test). Lo que cambia es
+# el promedio entre volúmenes, que con NRMSE pesa más a los de poca energía. En validación sirve
+# para hablar en las unidades de QSM; en QSM es LA métrica, porque la susceptibilidad tiene signo y
+# no tiene rango: el PSNR no está definido.
 '''

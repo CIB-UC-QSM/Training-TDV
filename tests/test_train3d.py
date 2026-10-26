@@ -1585,8 +1585,8 @@ def test_seguimiento_offline_de_una_corrida(con_qsm):
 
 
 def test_reanudar_un_estado_sin_banderas_nuevas(corridas, tmp_path):
-    """Un estado anterior a una bandera de receta (los de runs/humo3d no tienen
-    `mascara_cerebro`), a las del seguimiento, la evaluación QSM y la estabilidad y a la clave
+    """Un estado anterior a una bandera de receta (uno escrito sin `mascara_cerebro`), a las
+    del seguimiento, la evaluación QSM y la estabilidad y a la clave
     `qsm` se reanuda:
     la bandera que falta vale su default. Pasarla prendida sí cambia la receta."""
     carpeta = tmp_path / "corrida"

@@ -11,9 +11,10 @@ Con las máscaras del autor (las de su solver): la entrada y la salida de cada d
 máscara del cerebro en cada iteración, z_i = M·D_i(alpha·M·(chi + s_i))/alpha, y el chi final es
 M·chi. Afuera no hay datos (W² = 0) y el TDV amplifica.
 
-Ojo con la escala: la red se entrenó en [0, 1] y chi está en ppm (±0.1). `alpha` lleva la
-desviación estándar de la primera reconstrucción a TARGET_STD antes de cada denoiser y la deshace a
-la salida: es la calibración del autor, que existe porque la red conoce un solo sigma.
+Ojo con la escala: la red se entrenó en [0, 1], chi está en ppm (±0.1) y la red no es
+escala-equivariante. `alpha`, la calibración del autor, lleva la desviación estándar de χ₀ en la
+máscara a `target_std` (TARGET_STD por defecto; `train3d.py` prueba varios y cuenta el de menor
+NRMSE) antes de cada denoiser, y la deshace a la salida.
 
 `estabilidad` mide el número de estabilidad del paso explícito del esquema desenrollado,
 
@@ -56,10 +57,11 @@ __all__ = [
 Denoiser = Callable[[torch.Tensor], torch.Tensor]
 
 # --- PROTOCOLO DEL AUTOR ---------------------------------------------------------------------
-# Todos de `../tdv/wTDV_QSM_torch_3d.py` (con máscaras), por línea. Con ellos, las máscaras y su red
-# 2D color en los tres ejes el autor reporta 25.94 % de NRMSE en las 100 iteraciones, sin corte
-# (`../tdv/README.md`, «Script pseudo-3D»; sin máscaras eran 26.89 % en 26). No tocar: es la
-# referencia.
+# De `../tdv/wTDV_QSM_torch_3d.py` (con máscaras), por línea, salvo UMBRAL_CONO (derivado) y
+# SIM2_ARCHIVO. Con ellos, las máscaras y su red 2D color en los tres ejes el autor reporta 25.94 %
+# de NRMSE en las 100 iteraciones, sin corte (`../tdv/README.md`, «Script pseudo-3D»; sin máscaras
+# eran 26.89 % en 26). Su script usa hoy `tolUpdate` = 1.25 y `finUpdate` = 1.35 (26.01 % en 29
+# iteraciones); TOL y CORTE son los de la referencia de 25.94 %. No tocar: es la referencia.
 MU = 0.008                   # :25, el `mu` del oficial en PARAMS, "del grid search del 2D"
 MU2 = 1.0                    # :52, peso del split del término de datos
 # El cono del dipolo: donde μ₂·D² < μ, el x-update pesa más el prior que el dato (0.0894).
@@ -170,6 +172,7 @@ def nrmse_pct(pred: np.ndarray, gt: np.ndarray, mascara: np.ndarray | None = Non
 # --- MÉTRICAS DE χ ---------------------------------------------------------------------------
 
 def _enmascara(v: np.ndarray, m: np.ndarray) -> np.ndarray:
+    """`v` con ceros fuera de `m`, en float64."""
     return np.where(m, v, 0).astype(np.float64)
 
 
@@ -427,18 +430,12 @@ def estabilidad(modelo: torch.nn.Module, x: torch.Tensor | np.ndarray, *,
     """lambda_max(hess_R(x)) por iteración de potencia y el número del paso, (T/S)·lambda_max.
 
     `x` es un volumen `[D, H, W]` o un lote `[B, C, D, H, W]`. El producto Hessiano-vector es el
-    EXACTO: la VJP por autograd de `R.grad` (la adjunta escrita a mano, que es diferenciable),
-    H·v = J_grad(x)ᵀ·v, con el grafo armado una vez y recorrido `iters` veces. Va en el dtype de
-    los pesos (float32 en la corrida, float64 en los tests), sin autocast y sin TF32, y llama al
-    método de la clase, no al `R.grad` compilado que `train3d` pone en la instancia. No toca los
-    pesos ni sus `.grad` (`autograd.grad` sólo respecto de x) ni el generador global: el vector
-    de arranque sale de uno propio, con `semilla`.
-
-    lambda_max es ‖Hv‖ del último v, como en el script 2D: el MÓDULO del autovalor dominante,
-    al que la potencia converge desde abajo. `rayleigh`, vᵀHv, sólo da el signo
-    (docs/porque-del-codigo.md, ESTABILIDAD de ddr/qsm3d.py).
+    exacto (la VJP de `R.grad`), en el dtype de los pesos, sin autocast ni TF32. No toca los
+    pesos, sus `.grad` ni el generador global: el vector de arranque sale de `semilla`.
+    lambda_max es el MÓDULO del autovalor dominante; `rayleigh`, vᵀHv, sólo da el signo.
     Devuelve lambda_max, rayleigh, paso, T, S, iteraciones, cambio_relativo (|Δlambda|/lambda en
-    la última iteración: la convergencia, que subestima el error) y segundos.
+    la última iteración, que subestima el error) y segundos (docs/porque-del-codigo.md,
+    ESTABILIDAD de ddr/qsm3d.py).
     """
     t0 = time.perf_counter()
     R = modelo.R
@@ -490,6 +487,7 @@ def _gira(corte: np.ndarray, angulo: int) -> np.ndarray:
 
 
 def _a_uint8(im: np.ndarray, rango: tuple[float, float]) -> np.ndarray:
+    """`im` a uint8, con `rango` en 0..255 y lo de afuera saturado."""
     lo, hi = rango
     return np.round(np.clip((im - lo) / (hi - lo), 0.0, 1.0) * 255).astype(np.uint8)
 
@@ -511,6 +509,7 @@ def _junta(piezas: list[np.ndarray], eje: int) -> np.ndarray:
 
 
 def _volumen(v: Any) -> np.ndarray:
+    """Un tensor o un arreglo como volumen float32 `[D, H, W]`, sin los ejes de tamaño 1."""
     if isinstance(v, torch.Tensor):
         # `.float()` antes de numpy, que no tiene bf16: una salida de autocast levantaría TypeError.
         v = v.detach().float().cpu()
@@ -553,31 +552,5 @@ def lamina_denoising(limpia: Any, ruidosa: Any, salida: Any,
     return _junta([cortes_centrales(f, rango, orientacion)
                    for f in (limpia, ruidosa, salida, error)], eje=0)
 
-'''
-# --- PROTOCOLO DEL AUTOR ---------------------------------------------------------------------
-# El ADMM parte chi en z2 = D chi (datos) y en k copias z_i = chi (prior), con duales escalados:
-#   chi = F⁻¹[(mu2·D·F(z2 − s2) + (mu/k)·Σ F(z_i − s_i)) / (mu2·D² + mu)]       (D real)
-#   z_i = M·D_i(alpha·M·(chi + s_i))/alpha,                 s_i += chi − z_i
-#   z2  = (W²·phase + mu2·(D chi + s2))/(W² + mu2),         s2 += D chi − z2
-# y devuelve M·chi. M es la máscara dura de alpha (`mascara`, `refined_mask` en :69), no la del
-# NRMSE (chi_cosmos != 0). Las máscaras son las del solver de `../tdv` (2026-10-18), iguales en su
-# 2D y su 3D. Con la entrada en M, el prox no depende de lo de afuera, y con la salida en M el
-# prior vale 0 donde no hay datos (W² = 0), que es donde el TDV amplifica (comentarios de :199 y
-# :213).
-# Cada split del prior pesa mu/k, así que juntos pesan mu: k = 1 y k = 3 con tres denoisers
-# iguales son el mismo ADMM salvo redondeo (2.5e-8 sobre un chi de 0.1, medido en el sintético
-# del test, antes de las máscaras).
-# `alpha` se fija en t = 0 con chi_0, que sale sólo del término de datos (los z_i valen 0): no
-# depende de la red. En COSMOS da 4.8591, el mismo que los logs del autor.
-# El update relativo, sobre el volumen entero, baja, toca un mínimo y vuelve a subir: el ADMM se da
-# por convergido al bajar de TOL y corta en la primera iteración cuyo update ANTERIOR pasa de
-# CORTE. El chi final es el de esa iteración. TOL = 1.15 y CORTE = 1.30 los ajustó el autor con la
-# red 2D oficial y sólo la salida enmascarada (corte en la 38, 25.94 %); con la entrada
-# también en M el update de esa red baja sólo a 1.24 y no corta (`../tdv/README.md`). Para otra red
-# los umbrales cambian: en el 2D, el grid del autor eligió tolUpdate de 0.3 a 1.5 para las cinco
-# redes (`../tdv/wTDV_QSM_torch.py:24-28`). Los de la red 3D se calibran con un grid después del
-# entrenamiento (pendiente); mientras, la corrida no depende de que corte: `best_qsm.pth` y
-# --meseta miran el NRMSE mínimo de la trayectoria (docs/porque-del-codigo.md, EVALUACIÓN QSM y
-# MESETA de train3d.py).
-# El resto de las notas de este archivo, en docs/porque-del-codigo.md, «## ddr/qsm3d.py».
-'''
+# Las notas de este archivo, en docs/porque-del-codigo.md, «## ddr/qsm3d.py» (PROTOCOLO DEL
+# AUTOR, REPRODUCCIÓN, COSTO DEL 3D y ESTABILIDAD).

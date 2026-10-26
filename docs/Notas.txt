@@ -7,7 +7,7 @@ Los cubos 100 % cerebro tienen un costo. A 48³ los cubos cubren el 66 % del cer
 Nombres de los pesos: hoy no carga.
    - Nosotros guardamos R.K1, R.mb…, R.KN bajo model.
    - QSM-TDV espera analysis, macro_blocks, energy_head bajo model_state_dict.
-   - Un conversor renombra 44 pesos y rehace 12 buffers. Existe (scripts/compat_qsm_tdv/a_qsm_tdv.py, en tu checkout), pero no está en git.
+   - Un conversor renombra 44 pesos y rehace 12 buffers: a_qsm_tdv.py, en la raíz del repositorio.
    
 Bordes del volumen: carga, pero calcula otra cosa.
    - TDV baja la resolución con una convolución aprendida y un desenfoque, y sube con la transpuesta de otra convolución, con pesos propios.
@@ -16,9 +16,10 @@ Bordes del volumen: carga, pero calcula otra cosa.
    - Se midió en cubos de 40³–96³ con pesos tempranos. Ni un volumen entero ni una red entrenada están medidos.
 
 La escala de χ. Apareció hoy, al revisar el código para esta respuesta.
-   - Nuestro ADMM multiplica χ por un α fijo antes de la red y lo divide a la salida. α se calcula una vez, para que la primera reconstrucción tenga desviación 0.06 en el cerebro; en COSMOS vale 4.86.
-   - QSM-TDV no reescala χ: la red vería una amplitud ~4.86 veces menor que en nuestra validación.
-   - Importa porque TDV no es lineal: bajar target_std de 0.06 a 0.03 empeoró el NRMSE 1.4–1.7 puntos, y ahí equivaldría a ~0.012, que nunca se probó.
+   - Nuestro ADMM multiplica χ por un α fijo antes de la red y lo divide a la salida. α = target/std(χ₀ en el cerebro), calculado una vez. La evaluación corre a 0.15, 0.02 y 0.05 y cuenta
+     el de menor NRMSE. A 0.06, el default, α vale 4.86 en COSMOS.
+   - QSM-TDV no reescala χ (α = 1): en COSMOS equivale a un target de ~0.012 (0.06/4.86), debajo del menor que se evalúa.
+   - Importa porque TDV no es lineal. Con la red de la 10 000, en COSMOS el NRMSE sube con el target (grid del 25-10: 26.73 % a 0.02, 30.83 % a 0.06). A ~0.012 no se midió.
 
 Sólo se comparan las subidas: el lote fijo y la validación son cubos distintos.
 - La cadena aprende. La pérdida del lote fijo bajó de 1 072.7 (lo mismo que no limpiar nada, ≈1 063) a 48.4. Casi todo es aprender a limpiar: el control también baja, hasta ~62–64.
@@ -32,39 +33,32 @@ Sólo se comparan las subidas: el lote fijo y la validación son cubos distintos
 
 
 prep3d-sobreajuste   [2] prueba de sobreajuste: el mismo lote de 4 cubos de 48^3 (4 volúmenes) con
-                     el mismo ruido en cada iteración, 1 500 iteraciones. Código: commit e96f3d8.
+                     el mismo ruido en cada iteración, 1 500 iteraciones.
 prep3d-control       [2] su control: mismas banderas y semilla, con un lote nuevo en cada iteración
-                     (1 000 volúmenes). Código: commit e96f3d8.
-prep3d-punta         [3] prueba de punta a punta: las banderas de la corrida larga recortadas a 200
+                     (1 000 volúmenes).
+prep3d-punta         [3] prueba de punta a punta: σ = 25 fijo y la razón del disyuntor en 5, 200
                      iteraciones, con evaluación (PSNR y QSM en COSMOS) y estado cada 100.
-                     Código: commit c88a255 (el final, con el que se lanza la corrida larga).
 prep3d-reanuda       [4] la anterior reanudada desde su estado de la iteración 100, en otra carpeta,
                      después de que terminara la original. Mismo código.
-prep3d-mil-s1, -s2   [5] las banderas de la corrida larga durante 1 000 iteraciones, semillas 1 y 2,
-                     con la razón del disyuntor por defecto (5), evaluación y estado cada 250 y la
-                     lista de 1 000 volúmenes (para que las dos entraran a la vez en RAM). c88a255.
-prep3d-g10-s1, -s2   [5] lo mismo con la razón en 10 (--guard 10). Se cortaron el 18 a las ~08:01 por
-                     una caída de la máquina (s1 en la 800, s2 en la 825): no tienen estado.json, y
-                     traza.npy, history.json y qsm.jsonl llegan a la 750 (el log, hasta el corte).
-prep3d-g10-s2-2500   [6] rama de prep3d-g10-s2 desde su estado de la iteración 500, con lr constante
-                     (--meseta 0) hasta la 2 500, evaluación y estado cada 250. Las filas 1-500 de
-                     traza.npy son las heredadas de la corrida madre. c88a255.
+prep3d-g10-s2-2500   [6] σ = 25 fijo, la razón del disyuntor en 10 (--guard 10), semilla 2 y la lista
+                     de 1 000 volúmenes: rama, desde su iteración 500, de una corrida de 1 000 ya
+                     borrada, con lr constante (--meseta 0) hasta la 2 500, evaluación y estado cada
+                     250. Las filas 1-500 de traza.npy son las heredadas de la corrida madre.
 
-systemd-run --user --collect --unit tdv-3d-largo -p WorkingDirectory=$PWD bash -c \
-".venv/bin/python -u train3d.py --out runs/3d-largo --iterations 100000 --hitos \
---meseta 3 --guard 10 --mascara-cerebro --seguimiento online --eval-every 2500 \
---guardar-cada 2500 > runs/3d-largo.log 2>&1"
+El comando de la corrida larga: README, «Llevar el entrenamiento 3D a otra máquina».
 
 PARA PENSAR A FUTURO (23-10), de más a menos costo-efectivo. «efecto» es lo que se espera ganar, «tiempo» lo que cuesta.
 
-1. Elegir el mejor α en cada evaluación (0.25, 0.06 y 0.02; best_qsm por el menor NRMSE, y se registra el target).
+1. HECHO (24-10): elegir el mejor α en cada evaluación (varios --qsm-target-std; best_qsm por el menor NRMSE, y se registra el target). La rama a 20 000 evalúa a 0.15, 0.02 y 0.05.
    El barrido del 23-10 mostró por qué: con el target fijo en 0.25 el QSM parecía empeorar al entrenar; con el mejor target de cada
-   checkpoint mejora (COSMOS 30.71 → 27.77 % a 0.02, de la 1 488 a la 4 960).
-   - efecto: best_qsm deja de estar sesgado por un target fijo; se ve si a 0.06 el NRMSE baja con el entrenamiento.  | tiempo: horas de código; +~10 % por evaluación.  [EN CURSO, entra en la rama a 20 000]
+   checkpoint mejora (COSMOS a 0.02: 35.12 % en la 496, 30.71 en la 1 488, 27.77 en la 4 960 y 26.73 en la 10 000).
+   - efecto: best_qsm deja de estar sesgado por un target fijo.  | tiempo: un ADMM más por target y sujeto en cada evaluación.
 2. lr/2 cuando la curva se aplane (--hitos <it> en una rama, sin tocar código).
    - efecto: suele dar un escalón de mejora en PSNR y pérdida.  | tiempo: nada de código; sólo esperar a ver el aplanamiento.
 3. Barrido final de target sobre el último checkpoint (0.04–0.15, 100 iteraciones; pre-registrado en la bitácora el 23-10).
    - efecto: dice dónde queda el α óptimo de la red entrenada y prueba la predicción (~0.11 COSMOS, ~0.09 Sim2).  | tiempo: ~3 h de GPU, sin código.
+   En la 10 000 (grid del 25-10, 0.02–0.06): el mejor fue 0.02 en COSMOS (26.73 %) y 0.055 en Sim2 (34.11 %), lejos de lo predicho.
+   Antes del barrido final, rehacer la predicción y bajar el rango hasta 0.02.
 4. Prueba de linealidad estilo QSMnet+ (Jung et al., NeuroImage 2020), sólo como diagnóstico: escalar una región (una «hemorragia» simulada) y ver si la salida escala igual.
    - efecto: nuestra α por std es lineal ante un escalado global, pero no ante uno local; esto mide cuánto se pierde.  | tiempo: ~1–2 h (script chico + GPU).
 5. Pseudo-3D oficial (2D, k = 3) a α alto (0.25–0.35) en ../tdv (pendiente desde el 21-10).
