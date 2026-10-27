@@ -811,6 +811,15 @@ y devuelve M·χ.
   EVALUACIÓN QSM y MESETA; bitácora, «La evaluación QSM»). `MAX_ITER = 100`, `TOL` y `CORTE` siguen
   siendo los defaults de `admm_wtdv`: el protocolo del autor, la referencia.
 
+### TÉRMINO DE DATOS NO LINEAL (FANSI)
+
+`datos_modelo` de `admm_wtdv` cambia sólo el paso del z2 (el término de datos): "nolineal" es el
+Newton de `nlTV.m:149-163` y "l1" el prox complejo más Newton de `nlL1TV.m:231-261`, del
+FANSI-toolbox. Los dos van en radianes (`FASE_POR_PPM_COSMOS`, el B0 y el TE con que FANSI simuló
+`params.mat`; `FASE_POR_PPM_SIM2`, 7 T y 8 ms) y con el peso de FANSI, W² con máximo 1: con el W2
+de media 1 el denominador del Newton de nlTV se anula y diverge. Funciones, líneas y tests:
+`docs/27-10-admm-datos-no-lineales.md`.
+
 ### REPRODUCCIÓN
 
 - **Sin máscaras** (k = 3, CPU float32, sin compilar; 2026-10-12): 26.8898 % con corte en t = 26

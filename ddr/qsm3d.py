@@ -2,6 +2,8 @@
 
     min_chi  ½‖W(D chi − phase)‖² + R(chi),   con z2 = D chi y z_i = chi como variables partidas
 
+(o con el término de datos no lineal o L1 de FANSI, `datos_modelo` de `admm_wtdv`)
+
 Es el protocolo de `../tdv/wTDV_QSM_torch_3d.py` (el pipeline QSM del autor) generalizado a k
 denoisers: k = 3 es su pseudo-3D (la red 2D en los tres ejes, un z_i y un dual s_i por eje) y k = 1
 es el 3D, una red sobre el volumen entero. Lo que sigue la corrida es el NRMSE (%) contra
@@ -41,6 +43,7 @@ from .data3d import _recorte_centrado
 
 __all__ = [
     "MU", "MU2", "TARGET_STD", "MAX_ITER", "TOL", "CORTE",
+    "DATOS_MODELOS", "FASE_POR_PPM_COSMOS", "FASE_POR_PPM_SIM2", "MU3",
     "ITERS_ESTABILIDAD", "SEMILLA_ESTABILIDAD", "UMBRAL_ESTABILIDAD", "LADO_ESTABILIDAD",
     "prepara_datos",
     "carga_cosmos",
@@ -71,6 +74,22 @@ TARGET_STD = 0.06            # :25, desviación de alpha·chi_0 en la máscara, 
 MAX_ITER = 100               # :46
 TOL = 1.15                   # :47 y :193: por debajo, el ADMM se da por convergido
 CORTE = 1.30                 # :48 y :179 (`finUpdate`): convergido, corta si el update lo pasa
+
+# --- TÉRMINO DE DATOS NO LINEAL (FANSI) ------------------------------------------------------
+# `datos_modelo` de `admm_wtdv`: "lineal" es el del autor; "nolineal" y "l1" son el z2 de
+# `nlTV.m` y de `Inversion/L1-QSM/nlL1TV.m` del FANSI-toolbox (gitlab.com/cmilovic/FANSI-toolbox),
+# por línea. Los dos trabajan con la fase en radianes, ppm·γ·B0·TE, como FANSI.
+DATOS_MODELOS = ("lineal", "nolineal", "l1")
+GAMMA = 2 * math.pi * 42.58  # `gyro` de los scripts de FANSI: rad por ppm, por T y por s
+# COSMOS: el TE y el B0 con que se simuló `params.mat` (`script_cosmos_phantom.m:27-31`), 19.354.
+FASE_POR_PPM_COSMOS = GAMMA * 2.8936 * 25e-3
+# Sim2: B0 = 7 T (Marques et al., MRM 2021) y TE = 8 ms (supervisor, 27-10), 14.98.
+FASE_POR_PPM_SIM2 = GAMMA * 7.0 * 8e-3
+MU3 = 1.0                    # nlL1TV.m:58-62, peso del split z3 = exp(i·z2) − exp(i·φ)
+TOL_NEWTON = 1e-6            # nlTV.m:212 y nlL1TV.m:88-93 (`tolDelta`)
+NEWTON_NOLINEAL = 10         # nlTV.m:155, pasos de Newton por iteración
+NEWTON_L1 = 4                # nlL1TV.m:242
+PISO_NEWTON_L1 = 0.05        # nlL1TV.m:248, el |denominador| mínimo del paso de Newton
 
 # --- MÁSCARA DEL AUTOR -----------------------------------------------------------------------
 # El skull-stripping de `wTDV_QSM_torch_3d.py:36-45`, con sus números.
@@ -242,11 +261,59 @@ def metricas_chi(chi: np.ndarray, datos: dict[str, np.ndarray]) -> dict[str, flo
 
 # --- ADMM ------------------------------------------------------------------------------------
 
+def _z2_nolineal(rhs_z2: torch.Tensor, phase: torch.Tensor, W: torch.Tensor,
+                 mu2: float) -> torch.Tensor:
+    """`nlTV.m:149-163`: el z2 que anula W·sin(z2 − φ) + μ₂·z2 − rhs, el gradiente de
+    W·(1 − cos(z2 − φ)) + (μ₂/2)·‖z2 − rhs/μ₂‖², por Newton desde rhs/μ₂, hasta NEWTON_NOLINEAL
+    pasos o un paso relativo ≤ TOL_NEWTON. W es el peso al cuadrado (`W = weight.^2`, :274)."""
+    z2 = rhs_z2 / mu2
+    delta, inn = math.inf, 0
+    while delta > TOL_NEWTON and inn < NEWTON_NOLINEAL:
+        inn += 1
+        norm_old = torch.linalg.vector_norm(z2)
+        update = (W * torch.sin(z2 - phase) + mu2 * z2 - rhs_z2) / (W * torch.cos(z2 - phase) + mu2)
+        z2 = z2 - update
+        delta = (torch.linalg.vector_norm(update) / norm_old).item()
+    return z2
+
+
+def _prox_l1_complejo(Y: torch.Tensor, umbral: torch.Tensor) -> torch.Tensor:
+    """`nlL1TV.m:232`: max(|Y| − umbral, 0)·sign(Y), con el sign complejo de MATLAB, Y/|Y|."""
+    return torch.clamp(Y.abs() - umbral, min=0) * torch.sgn(Y)
+
+
+def _z2_l1(rhs_z2: torch.Tensor, IS: torch.Tensor, z3: torch.Tensor, s3: torch.Tensor,
+           mu2: float, mu3: float) -> torch.Tensor:
+    """`nlL1TV.m:234-256`: el z2 que acerca exp(i·z2) a IS + z3 − s3 (peso μ₃) y z2 a rhs/μ₂
+    (peso μ₂), por Newton desde rhs/μ₂: hasta NEWTON_L1 pasos, con el |denominador| ≥
+    PISO_NEWTON_L1, y corta si un paso relativo crece (después de darlo, como :249-253)."""
+    z2 = rhs_z2 / mu2
+    y = IS + z3 - s3
+    corrido = torch.angle(y) + 1j * torch.log(y.abs())   # z2 − yphase − i·log(ym) = z2 − corrido
+    delta, inn = math.inf, 0
+    while delta > TOL_NEWTON and inn < NEWTON_L1:
+        inn += 1
+        norm_old = torch.linalg.vector_norm(z2)
+        arg = z2 - corrido
+        temp = mu3 * torch.cos(arg) + mu2
+        update = torch.real((mu3 * torch.sin(arg) + mu2 * z2 - rhs_z2)
+                            / (torch.clamp(temp.abs(), min=PISO_NEWTON_L1) * torch.sgn(temp)))
+        z2 = z2 - update
+        delta_new = (torch.linalg.vector_norm(update) / norm_old).item()
+        if delta_new > delta:
+            break
+        delta = delta_new
+    return z2
+
+
 def admm_wtdv(denoisers: Sequence[Denoiser], datos: dict[str, np.ndarray], *, mu: float = MU,
               mu2: float = MU2, target_std: float = TARGET_STD, max_iter: int = MAX_ITER,
               tol: float = TOL, corte: float = CORTE, subidas_para_cortar: int = 0,
               device: str | torch.device,
-              al_iterar: Callable[[int, float, float], None] | None = None) -> dict[str, Any]:
+              al_iterar: Callable[[int, float, float], None] | None = None,
+              datos_modelo: str = "lineal", fase_por_ppm: float | None = None,
+              mu3: float = MU3, lambda_l1: float = 1.0,
+              mu_por_alfa: float | None = None) -> dict[str, Any]:
     """El bucle de `wTDV_QSM_torch_3d.py:166-230` (con máscaras) con k = len(denoisers) splits del
     prior.
 
@@ -269,9 +336,29 @@ def admm_wtdv(denoisers: Sequence[Denoiser], datos: dict[str, np.ndarray], *, mu
     que vio: `nrmse_final` es el mínimo de lo recorrido. La trayectoria guarda también los NRMSE
     que hicieron parar. Mira la referencia: sirve para comparar checkpoints, no para un sujeto
     sin chi.
+
+    `datos_modelo` elige el término de datos, el único paso que cambia (el z2 y su dual, al final
+    del bucle): "lineal", ½‖W(z2 − φ)‖², cerrado, el del autor; "nolineal", ‖W(exp(i·z2) −
+    exp(i·φ))‖²/2 = W²·(1 − cos(z2 − φ)), el de `nlTV.m` (Newton, `_z2_nolineal`); "l1",
+    ‖W₁(exp(i·z2) − exp(i·φ))‖₁, el de `nlL1TV.m`, con otro split z3 = exp(i·z2) − exp(i·φ) de peso
+    `mu3` y su dual s3 (`_prox_l1_complejo` y `_z2_l1`), y W₁ = `lambda_l1`·√W²/max √W² (λ < 1
+    rechaza más vóxeles inconsistentes). Los dos no lineales pesan como FANSI, con la magnitud en
+    [0, 1]: W² pasa de media 1 en el cerebro a máximo 1 (W² ≤ μ₂, y el denominador del Newton de
+    nlTV, W²·cos(z2 − φ) + μ₂, no se anula; con media 1, W² llega a ~10 y diverge). Trabajan en
+    radianes: la fase y χ por `fase_por_ppm` (FASE_POR_PPM_COSMOS o _SIM2), y el NRMSE, `chi`,
+    `chi0` y `alpha` vuelven a ppm. En "lineal" la escala es 1 y el bucle es el de siempre.
+
+    Con `mu_por_alfa` = k, μ = k·α desde t = 1 (la relación μ/α fija del supervisor); χ₀ (t = 0)
+    sale con `mu`, porque α sale de χ₀. α va en las unidades de ppm, así que k no depende de la
+    escala. `mu` en el resultado es el μ con que terminó.
     """
     if subidas_para_cortar and datos.get("chi") is None:
         raise ValueError("subidas_para_cortar mira el NRMSE: necesita `chi` en `datos`")
+    if datos_modelo not in DATOS_MODELOS:
+        raise ValueError(f"datos_modelo {datos_modelo!r}: uno de {DATOS_MODELOS}")
+    if datos_modelo != "lineal" and fase_por_ppm is None:
+        raise ValueError(f"datos_modelo {datos_modelo!r} trabaja en radianes: falta fase_por_ppm")
+    escala = 1.0 if datos_modelo == "lineal" else float(fase_por_ppm)
     t0 = time.perf_counter()
     k = len(denoisers)
     kernel, K2, weight, Wy, mask = (torch.from_numpy(np.ascontiguousarray(datos[c])).to(device)
@@ -285,7 +372,21 @@ def admm_wtdv(denoisers: Sequence[Denoiser], datos: dict[str, np.ndarray], *, mu
     qsm = torch.zeros(N, dtype=torch.float32, device=device)
     weight_mu2 = weight + mu2
     denominator = mu2 * K2 + mu
-    z2 = Wy / weight_mu2
+    if datos_modelo != "lineal":
+        # La fase en radianes, como `params.input = phase_use*phs_scale` de los scripts de FANSI,
+        # y el peso con máximo 1, como su magnitud en [0, 1].
+        phase = torch.from_numpy(np.ascontiguousarray(datos["phase"])).to(device) * escala
+        weight = weight / weight.max()
+        weight_mu2 = weight + mu2
+        Wy = weight * phase
+    if datos_modelo == "l1":
+        W1 = lambda_l1 * torch.sqrt(weight)
+        IS = torch.exp(1j * phase)                                       # nlL1TV.m:108
+        s3 = torch.zeros(N, dtype=IS.dtype, device=device)               # :134
+        z2 = W1 * phase / W1.max()                                       # :127
+    else:
+        # El `isPrecond` de nlTV.m:57 es el mismo arranque que el lineal.
+        z2 = Wy / weight_mu2
     s2 = torch.zeros(N, dtype=torch.float32, device=device)
 
     nrmse: list[float] = []
@@ -306,15 +407,19 @@ def admm_wtdv(denoisers: Sequence[Denoiser], datos: dict[str, np.ndarray], *, mu
         qsm = torch.real(torch.fft.ifftn(numerator / denominator)).to(torch.float32)
 
         if t == 0:
-            chi0 = (qsm * mask_f).cpu().numpy()   # la primera reconstrucción, sin la red
+            # La primera reconstrucción, sin la red, en ppm (`/ escala` es exacto con 1).
+            chi0 = (qsm * mask_f).cpu().numpy() / escala
             qsm_std = torch.std(qsm[mask])
             alpha = target_std / qsm_std.item() if qsm_std.item() > 0 else 1.0
+            if mu_por_alfa is not None:
+                mu = mu_por_alfa * alpha * escala      # α en ppm: α_rad·escala
+                denominator = mu2 * K2 + mu
 
         # Sin enmascarar, como :189: es el criterio de parada del ADMM, no una métrica.
         x_update.append((100 * torch.sqrt(torch.mean((qsm - qsm_old) ** 2))
                          / torch.sqrt(torch.mean(qsm ** 2))).item())
-        # Sobre M·chi, el mapa que se devuelve (:236).
-        nrmse.append(nrmse_pct((qsm * mask_f).cpu().numpy(), chi_gt, mascara_eval)
+        # Sobre M·chi, el mapa que se devuelve (:236), en ppm.
+        nrmse.append(nrmse_pct((qsm * mask_f).cpu().numpy() / escala, chi_gt, mascara_eval)
                      if chi_gt is not None else math.nan)
         if al_iterar is not None:
             al_iterar(t, x_update[-1], nrmse[-1])
@@ -348,8 +453,17 @@ def admm_wtdv(denoisers: Sequence[Denoiser], datos: dict[str, np.ndarray], *, mu
             s[i] += qsm - z[i]
 
         # --- z2 Y SU DUAL: el término de datos pesado por W² ---------------------------------
-        z2 = (Wy + mu2 * (FhDFx + s2)) / weight_mu2
+        # El único paso que cambia con `datos_modelo`; el x-update y el prior son los mismos.
+        if datos_modelo == "lineal":
+            z2 = (Wy + mu2 * (FhDFx + s2)) / weight_mu2
+        elif datos_modelo == "nolineal":
+            z2 = _z2_nolineal(mu2 * (FhDFx + s2), phase, weight, mu2)    # nlTV.m:149-163
+        else:
+            z3 = _prox_l1_complejo(torch.exp(1j * z2) - IS + s3, W1 / mu3)  # nlL1TV.m:231-232
+            z2 = _z2_l1(mu2 * (FhDFx + s2), IS, z3, s3, mu2, mu3)        # :234-256
         s2 += FhDFx - z2
+        if datos_modelo == "l1":
+            s3 = torch.exp(1j * z2) - IS + s3 - z3                        # :261
 
     finitos = [(v, t) for t, v in enumerate(nrmse) if math.isfinite(v)]
     nrmse_min, it_min = min(finitos) if finitos else (math.nan, -1)
@@ -357,9 +471,11 @@ def admm_wtdv(denoisers: Sequence[Denoiser], datos: dict[str, np.ndarray], *, mu
     if mejor_qsm is not None and motivo != "no_finito":
         qsm, nrmse_final = mejor_qsm, mejor_nrmse
     return {
-        "chi": (qsm * mask_f).cpu().numpy(), "chi0": chi0, "nrmse": nrmse, "x_update": x_update, "alpha": alpha,
+        "chi": (qsm * mask_f).cpu().numpy() / escala, "chi0": chi0, "nrmse": nrmse,
+        "x_update": x_update, "alpha": alpha * escala,
         "iteraciones": len(nrmse), "motivo": motivo, "nrmse_final": nrmse_final,
-        "nrmse_min": nrmse_min, "it_min": it_min, "k": k,
+        "nrmse_min": nrmse_min, "it_min": it_min, "k": k, "mu": mu,
+        "datos_modelo": datos_modelo, "fase_por_ppm": escala,
         "segundos": time.perf_counter() - t0,
     }
 

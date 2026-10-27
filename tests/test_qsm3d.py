@@ -662,3 +662,153 @@ def test_lamina_denoising():
     # Una salida en bf16 (autocast de `rapido`): numpy no tiene bf16 y `np.asarray` levantaba.
     en_bf16 = qsm3d.lamina_denoising(limpia, ruidosa, torch.from_numpy(limpia).bfloat16())
     assert en_bf16.dtype == np.uint8 and en_bf16.shape == lam.shape
+
+
+# --- TÉRMINO DE DATOS NO LINEAL Y L1 (FANSI) -------------------------------------------------
+
+def z2_nltv_de_fansi(Kx, s2, phase, W, mu2, tolDelta=1e-6):
+    """`nlTV.m:149-163` del FANSI-toolbox, textual: `Kx` es real(ifftn(Kernel.*Fx))."""
+    rhs_z2 = mu2 * (Kx + s2)
+    z2 = rhs_z2 / mu2
+    delta = np.inf
+    inn = 0
+    while delta > tolDelta and inn < 10:
+        inn = inn + 1
+        norm_old = torch.linalg.vector_norm(z2)
+        update = (W * torch.sin(z2 - phase) + mu2 * z2 - rhs_z2) / (W * torch.cos(z2 - phase) + mu2)
+        z2 = z2 - update
+        delta = (torch.linalg.vector_norm(update) / norm_old).item()
+    return z2
+
+
+def z2_nll1tv_de_fansi(z2, Kx, s2, s3, IS, W, mu2, mu3, tolDelta=1e-6):
+    """`nlL1TV.m:231-261` del FANSI-toolbox, textual (sin el `+ eps`, que en float32 no suma);
+    devuelve z2, z3 y el s3 nuevo. El `sign` complejo de MATLAB es `torch.sgn`."""
+    Y3 = torch.exp(1j * z2) - IS + s3
+    z3 = torch.clamp(Y3.abs() - W / mu3, min=0) * torch.sgn(Y3)
+    rhs_z2 = mu2 * (Kx + s2)
+    z2 = rhs_z2 / mu2
+    delta = np.inf
+    inn = 0
+    yphase = torch.angle(IS + z3 - s3)
+    ym = (IS + z3 - s3).abs()
+    while delta > tolDelta and inn < 4:
+        inn = inn + 1
+        norm_old = torch.linalg.vector_norm(z2)
+        temp = mu3 * torch.cos(z2 - yphase - 1j * torch.log(ym)) + mu2
+        update = torch.real((mu3 * torch.sin(z2 - yphase - 1j * torch.log(ym)) + mu2 * z2 - rhs_z2)
+                            / (torch.clamp(temp.abs(), min=0.05) * torch.sgn(temp)))
+        z2 = z2 - update
+        delta_new = (torch.linalg.vector_norm(update) / norm_old).item()
+        if delta_new > delta:
+            break
+        delta = delta_new
+    s3 = torch.exp(1j * z2) - IS + s3 - z3
+    return z2, z3, s3
+
+
+def entradas_de_datos(semilla=3, n=12, amplitud=2.0):
+    """Un z2 previo, Kx, s2, s3, una fase y un peso, con diferencias de hasta ~amplitud rad: lejos
+    del régimen lineal, donde un error en sin o cos se nota."""
+    g = torch.Generator().manual_seed(semilla)
+
+    def r(escala=1.0):
+        return escala * torch.randn((n,) * 3, generator=g)
+    phase = r(amplitud)
+    W = r().abs() + 0.1
+    s3 = torch.complex(r(0.1), r(0.1))
+    return r(amplitud), r(amplitud), r(0.1), s3, phase, W
+
+
+def test_z2_nolineal_es_nltv_de_fansi():
+    """`_z2_nolineal` contra la transcripción de nlTV.m, bit a bit (también donde su Newton sin
+    amortiguar diverge, con W > μ₂); y con el peso de FANSI, W ≤ 1 = μ₂, y fases de hasta ~1 rad, el
+    z2 anula el gradiente del subproblema: W·sin(z2 − φ) + μ₂·z2 − rhs ≈ 0."""
+    _, Kx, s2, _, phase, W = entradas_de_datos()
+    mu2 = 1.0
+    esperado = z2_nltv_de_fansi(Kx, s2, phase, W, mu2)
+    z2 = qsm3d._z2_nolineal(mu2 * (Kx + s2), phase, W, mu2)
+    assert torch.equal(z2, esperado)
+    _, Kx, s2, _, phase, W = entradas_de_datos(semilla=7, amplitud=0.5)
+    W = W / W.max()
+    z2 = qsm3d._z2_nolineal(mu2 * (Kx + s2), phase, W, mu2)
+    residuo = W * torch.sin(z2 - phase) + mu2 * z2 - mu2 * (Kx + s2)
+    assert residuo.abs().max() < 1e-4
+
+
+def test_z2_l1_es_nll1tv_de_fansi():
+    """El z3 y el z2 de "l1" contra la transcripción de nlL1TV.m, bit a bit; el prox del z3
+    encoge el módulo sin tocar la fase y anula lo que no pasa el umbral."""
+    z2_previo, Kx, s2, s3, phase, W = entradas_de_datos(semilla=5)
+    mu2, mu3 = 1.0, 1.0
+    IS = torch.exp(1j * phase)
+    z2_esp, z3_esp, s3_esp = z2_nll1tv_de_fansi(z2_previo, Kx, s2, s3, IS, W, mu2, mu3)
+    z3 = qsm3d._prox_l1_complejo(torch.exp(1j * z2_previo) - IS + s3, W / mu3)
+    z2 = qsm3d._z2_l1(mu2 * (Kx + s2), IS, z3, s3, mu2, mu3)
+    assert torch.equal(z3, z3_esp) and torch.equal(z2, z2_esp)
+    assert torch.equal(torch.exp(1j * z2) - IS + s3 - z3, s3_esp)
+    Y = torch.exp(1j * z2_previo) - IS + s3
+    vivos = z3.abs() > 0
+    assert torch.allclose(z3.abs()[vivos], (Y.abs() - W / mu3)[vivos], atol=1e-6)
+    assert torch.allclose(torch.angle(z3)[vivos], torch.angle(Y)[vivos], atol=1e-5)
+    assert (z3[Y.abs() <= W / mu3] == 0).all()
+
+
+def test_lineal_es_el_de_siempre(sintetico):
+    """`datos_modelo="lineal"` no mira `fase_por_ppm` y es, bit a bit, la llamada de siempre."""
+    base = qsm3d.admm_wtdv([JUGUETES[0]], sintetico, max_iter=6, device="cpu")
+    r = qsm3d.admm_wtdv([JUGUETES[0]], sintetico, max_iter=6, device="cpu",
+                        datos_modelo="lineal", fase_por_ppm=7.0)
+    assert r["nrmse"] == base["nrmse"] and r["x_update"] == base["x_update"]
+    assert np.array_equal(r["chi"], base["chi"]) and r["alpha"] == base["alpha"]
+    assert r["mu"] == qsm3d.MU and r["fase_por_ppm"] == 1.0
+
+
+def test_no_lineal_con_fase_chica_es_el_lineal(sintetico):
+    """Con la fase en radianes muy chica, sin(x) ≈ x y cos(x) ≈ 1: el no lineal sigue al lineal
+    con el mismo peso, W² con máximo 1 (el de FANSI). La red ve lo mismo, porque α·χ no depende de
+    la escala."""
+    datos = dict(sintetico)
+    datos["W2"] = sintetico["W2"] / sintetico["W2"].max()
+    datos["Wy"] = datos["W2"] * sintetico["phase"]
+    base = qsm3d.admm_wtdv([JUGUETES[0]], datos, max_iter=6, tol=-np.inf, device="cpu")
+    nl = qsm3d.admm_wtdv([JUGUETES[0]], sintetico, max_iter=6, tol=-np.inf, device="cpu",
+                         datos_modelo="nolineal", fase_por_ppm=1e-2)
+    assert np.allclose(nl["nrmse"], base["nrmse"], atol=1e-3)
+    assert np.isclose(nl["alpha"], base["alpha"], rtol=1e-4)
+    assert np.allclose(nl["chi"], base["chi"], atol=1e-4 * np.abs(base["chi"]).max())
+
+
+def test_no_lineales_corren_lejos_del_regimen_lineal(sintetico):
+    """Con fases de hasta ~1 rad (fase_por_ppm 40 en el sintético), los dos son finitos y bajan el
+    NRMSE de χ₀, y el resultado dice con qué corrió."""
+    for modelo in ("nolineal", "l1"):
+        r = qsm3d.admm_wtdv([JUGUETES[0]], sintetico, max_iter=8, tol=-np.inf, device="cpu",
+                            datos_modelo=modelo, fase_por_ppm=40.0)
+        assert all(np.isfinite(r["nrmse"])), modelo
+        assert r["nrmse"][-1] < r["nrmse"][0], modelo
+        assert r["datos_modelo"] == modelo and r["fase_por_ppm"] == 40.0
+
+
+def test_no_lineal_pide_la_escala(sintetico):
+    for modelo in ("nolineal", "l1"):
+        with pytest.raises(ValueError, match="fase_por_ppm"):
+            qsm3d.admm_wtdv([JUGUETES[0]], sintetico, max_iter=2, device="cpu",
+                            datos_modelo=modelo)
+    with pytest.raises(ValueError, match="datos_modelo"):
+        qsm3d.admm_wtdv([JUGUETES[0]], sintetico, max_iter=2, device="cpu", datos_modelo="tv")
+
+
+def test_mu_por_alfa(sintetico):
+    """Con μ = k·α y k = MU/α, la trayectoria es la de μ fijo en MU; con 4k, μ = 4·MU, y la
+    trayectoria cambia desde t = 1 (χ₀ sale con `mu`)."""
+    base = qsm3d.admm_wtdv([JUGUETES[0]], sintetico, max_iter=6, tol=-np.inf, device="cpu")
+    k = qsm3d.MU / base["alpha"]
+    igual = qsm3d.admm_wtdv([JUGUETES[0]], sintetico, max_iter=6, tol=-np.inf, device="cpu",
+                            mu_por_alfa=k)
+    assert np.isclose(igual["mu"], qsm3d.MU, rtol=1e-12)
+    assert np.allclose(igual["nrmse"], base["nrmse"], atol=1e-4)
+    otro = qsm3d.admm_wtdv([JUGUETES[0]], sintetico, max_iter=6, tol=-np.inf, device="cpu",
+                           mu_por_alfa=4 * k)
+    assert np.isclose(otro["mu"], 4 * qsm3d.MU, rtol=1e-6)
+    assert otro["nrmse"][0] == base["nrmse"][0] and otro["nrmse"][3] != base["nrmse"][3]
