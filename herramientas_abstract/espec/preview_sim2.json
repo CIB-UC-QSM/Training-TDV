@@ -1,0 +1,11 @@
+{
+ "sujeto": "Sim2",
+ "roi": {"plano": 2, "fila": 45, "col": 62, "lado": 32},
+ "dpi": 150,
+ "metodos": [
+  {"nombre": "Reference", "npz": "referencia", "clave": ""},
+  {"nombre": "TV", "npz": "runs/abstract-ismrm/28-10-chi-tv-Sim2-0.0001_300.npz", "clave": "chi"},
+  {"nombre": "2D TDV", "npz": "runs/abstract-ismrm/28-10-chi-tdv2d-Sim2-0.0426_0.01136.npz", "clave": "chi"},
+  {"nombre": "3D TDV", "npz": "runs/grid-mu-alfa/28-10-abstract_chis.npz", "clave": "14880/Sim2/0.0423_0.005674"}
+ ]
+}

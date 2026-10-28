@@ -70,6 +70,10 @@ MU2 = 1.0                    # :52, peso del split del término de datos
 # El cono del dipolo: donde μ₂·D² < μ, el x-update pesa más el prior que el dato (0.0894).
 UMBRAL_CONO = math.sqrt(MU / MU2)
 SIM2_ARCHIVO = "sim2.npz"     # lo que deja `datasets/prepara_sim2.py`
+# La máscara del ADMM de COSMOS: "autor" (el skull-stripping de :36-45 sobre la magnitud) o
+# "desafio" (el `msk.mat` del desafío 2016, el de `script_cosmos_phantom.m:17,45` de FANSI).
+MASCARAS_COSMOS = ("autor", "desafio")
+COSMOS_MSK = "msk.mat"
 TARGET_STD = 0.06            # :25, desviación de alpha·chi_0 en la máscara, la del oficial
 MAX_ITER = 100               # :46
 TOL = 1.15                   # :47 y :193: por debajo, el ADMM se da por convergido
@@ -124,28 +128,32 @@ SEPARACION = 2               # cosmético: píxeles blancos entre cortes y entre
 # --- DATOS -----------------------------------------------------------------------------------
 
 def prepara_datos(phase: np.ndarray, kernel: np.ndarray, magnitud: np.ndarray,
-                  chi: np.ndarray | None = None) -> dict[str, np.ndarray]:
+                  chi: np.ndarray | None = None,
+                  mascara: np.ndarray | None = None) -> dict[str, np.ndarray]:
     """El preprocesamiento de `wTDV_QSM_torch_3d.py:21,36-51`, operación por operación.
 
     `kernel` es el dipolo en k-space con el centro en el índice 0 (sin `ifftshift`, :21).
     Devuelve float32 salvo las máscaras: `W2` es la magnitud enmascarada, normalizada a media 1
     en el cerebro y al cuadrado (el `weight_np` del script desde :48), `Wy` = W2·phase, `K2` =
     conj(D)·D, `mascara` la máscara refinada de :45 (la de alpha) y, si hay `chi`, `mascara_eval`
-    = chi != 0 (:26), la del NRMSE.
+    = chi != 0 (:26), la del NRMSE. Con `mascara`, ésa reemplaza a la refinada (:36-45 no corren).
     """
     phase = np.asarray(phase, dtype=np.float32)
     kernel = np.asarray(kernel, dtype=np.float32)
     weight = np.asarray(magnitud, dtype=np.float32)
     K2 = np.conj(kernel) * kernel
 
-    brain_solid = ndimage.binary_fill_holes(weight > UMBRAL_SOLIDO)
-    mean_brain = np.mean(weight[brain_solid])
-    brain_clean = brain_solid & (weight > FRACCION_MEDIA * mean_brain)
-    brain_closed = ndimage.binary_closing(brain_clean, structure=np.ones((3, 3, 3)),
-                                          iterations=ITER_CIERRE)
-    brain_final = ndimage.binary_fill_holes(brain_closed)
-    refined_mask = (ndimage.gaussian_filter(brain_final.astype(np.float32), sigma=SIGMA_SUAVIZADO)
-                    > UMBRAL_SUAVIZADO)
+    if mascara is not None:
+        refined_mask = np.asarray(mascara, dtype=bool)
+    else:
+        brain_solid = ndimage.binary_fill_holes(weight > UMBRAL_SOLIDO)
+        mean_brain = np.mean(weight[brain_solid])
+        brain_clean = brain_solid & (weight > FRACCION_MEDIA * mean_brain)
+        brain_closed = ndimage.binary_closing(brain_clean, structure=np.ones((3, 3, 3)),
+                                              iterations=ITER_CIERRE)
+        brain_final = ndimage.binary_fill_holes(brain_closed)
+        refined_mask = (ndimage.gaussian_filter(brain_final.astype(np.float32),
+                                                sigma=SIGMA_SUAVIZADO) > UMBRAL_SUAVIZADO)
 
     # Las mismas tres operaciones en float32 que :46-48, en el mismo orden: la normalización
     # va antes del cuadrado.
@@ -161,13 +169,17 @@ def prepara_datos(phase: np.ndarray, kernel: np.ndarray, magnitud: np.ndarray,
     return datos
 
 
-def carga_cosmos(directorio: str | Path) -> dict[str, np.ndarray]:
+def carga_cosmos(directorio: str | Path, mascara: str = "autor") -> dict[str, np.ndarray]:
     """`params.mat` y `chi_cosmos.mat` de `directorio` (el `data_mat/` del autor), preparados como
-    en el script. Los 160^3 entran en ~150 MB."""
+    en el script. Con `mascara` = "desafio", el ADMM usa `msk.mat` de `directorio` en lugar de la
+    del autor (ver MASCARAS_COSMOS). Los 160^3 entran en ~150 MB."""
+    if mascara not in MASCARAS_COSMOS:
+        raise ValueError(f"mascara = {mascara!r}: es una de {MASCARAS_COSMOS}")
     directorio = Path(directorio)
     params = scipy.io.loadmat(directorio / "params.mat")
     chi = scipy.io.loadmat(directorio / "chi_cosmos.mat")["chi_cosmos"]
-    return prepara_datos(params["phase_use"], params["kernel"], params["magn_use"], chi)
+    msk = (scipy.io.loadmat(directorio / COSMOS_MSK)["msk"] if mascara == "desafio" else None)
+    return prepara_datos(params["phase_use"], params["kernel"], params["magn_use"], chi, msk)
 
 
 def carga_sim2(directorio: str | Path) -> dict[str, np.ndarray]:

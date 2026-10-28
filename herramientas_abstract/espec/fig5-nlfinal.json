@@ -1,0 +1,40 @@
+{
+ "metodos": {
+  "COSMOS": [
+   {
+    "nombre": "TV",
+    "npz": "runs/abstract-ismrm/28-10-chi-tvisonl-COSMOS-0.0002_15.npz",
+    "clave": "chi300"
+   },
+   {
+    "nombre": "2D TDV",
+    "npz": "runs/abstract-ismrm/28-10-chi-tdv2d-COSMOS-0.0426_0.00568.npz",
+    "clave": "chi"
+   },
+   {
+    "nombre": "3D TDV (ours)",
+    "npz": "/home/santicien/Documents/Training-TDV/runs/grid-mu-alfa/28-10-300-nl-cosmos_chis.npz",
+    "clave": "nl/COSMOS/0.0031_0.00054/it300"
+   }
+  ],
+  "Sim2": [
+   {
+    "nombre": "TV",
+    "npz": "runs/abstract-ismrm/28-10-chi-tvisonl-Sim2-0.0004_15.npz",
+    "clave": "chi300"
+   },
+   {
+    "nombre": "2D TDV",
+    "npz": "runs/abstract-ismrm/28-10-chi-tdv2d-Sim2-0.0426_0.01136.npz",
+    "clave": "chi"
+   },
+   {
+    "nombre": "3D TDV (ours)",
+    "npz": "/home/santicien/Documents/Training-TDV/runs/grid-mu-alfa/28-10-300-nl_chis.npz",
+    "clave": "nl/Sim2/0.0102_0.00055/it300"
+   }
+  ]
+ },
+ "rango": 0.05,
+ "dpi": 200
+}

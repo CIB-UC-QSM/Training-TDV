@@ -1,0 +1,23 @@
+{
+ "red": {
+  "nombre": "3D TDV",
+  "COSMOS": {"json": "runs/grid-mu-alfa/28-10-abstract.json", "clave": ["14880/COSMOS/0.01512_0.008", "profundidad", "rmse_capa"]},
+  "Sim2": {"json": "runs/grid-mu-alfa/28-10-abstract.json", "clave": ["14880/Sim2/0.0423_0.005674", "profundidad", "rmse_capa"]}
+ },
+ "bases": [
+  {
+   "nombre": "TV",
+   "color": "#6b6b6b",
+   "COSMOS": {"json": "runs/abstract-ismrm/28-10-tv-fansi-COSMOS-fino-iso.json", "clave": ["COSMOS/0.0001/300", "profundidad", "100", "rmse_capa"]},
+   "Sim2": {"json": "runs/abstract-ismrm/28-10-tv-fansi-Sim2-fino.json", "clave": ["Sim2/0.0001/300", "profundidad", "100", "rmse_capa"]}
+  },
+  {
+   "nombre": "2D TDV",
+   "color": "#e08a1e",
+   "COSMOS": {"json": "runs/abstract-ismrm/28-10-grid-tdv2d-COSMOS.json", "clave": ["configs", "0.0426/0.00568", "COSMOS", "profundidad", "rmse_capa"]},
+   "Sim2": {"json": "runs/abstract-ismrm/28-10-grid-tdv2d-Sim2-orto.json", "clave": ["configs", "0.0426/0.01136", "Sim2", "profundidad", "rmse_capa"]}
+  }
+ ],
+ "ylim": [-14, 6],
+ "dpi": 220
+}

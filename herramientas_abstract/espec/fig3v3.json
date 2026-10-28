@@ -1,0 +1,21 @@
+{
+ "sujeto": "Sim2",
+ "titulo": "Sim2",
+ "metodos": [
+  {"nombre": "Reference", "npz": "referencia", "clave": ""},
+  {"nombre": "TV", "npz": "runs/abstract-ismrm/28-10-chi-tv-Sim2-0.0001_300.npz", "clave": "chi",
+   "params": "anisotropic · λ 1e-4 · μ 0.03"},
+  {"nombre": "2D TDV", "npz": "runs/abstract-ismrm/28-10-chi-tdv2d-Sim2-0.0426_0.01136.npz", "clave": "chi",
+   "params": "natural images · target 0.043 · μ 0.011"},
+  {"nombre": "3D TDV (ours)", "npz": "runs/grid-mu-alfa/28-10-abstract_chis.npz",
+   "clave": "14880/Sim2/0.0423_0.005674", "params": "brain T1 · target 0.042 · μ 0.0057"}
+ ],
+ "rois": [
+  {"letra": "a", "plano": 0, "fila": 20, "col": 80, "lado": 30},
+  {"letra": "b", "plano": 0, "fila": 97, "col": 34, "lado": 30},
+  {"letra": "c", "plano": 1, "fila": 80, "col": 62, "lado": 30},
+  {"letra": "d", "plano": 2, "fila": 45, "col": 62, "lado": 30}
+ ],
+ "error_plano": 0,
+ "dpi": 200
+}

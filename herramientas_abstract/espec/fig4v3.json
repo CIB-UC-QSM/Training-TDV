@@ -1,0 +1,44 @@
+{
+ "metodos": [
+  {
+   "nombre": "TV",
+   "color": "#8c8c8c",
+   "COSMOS": {
+    "tray": {"json": "runs/abstract-ismrm/28-10-tv-fansi-COSMOS-fino-iso.json", "clave": ["COSMOS/0.0001/300", "nrmse"]},
+    "chi": {"npz": "runs/abstract-ismrm/28-10-chi-tviso-COSMOS-0.0001_300.npz", "clave": "chi"}
+   },
+   "Sim2": {
+    "tray": {"json": "runs/abstract-ismrm/28-10-tv-fansi-Sim2-fino.json", "clave": ["Sim2/0.0001/300", "nrmse"]},
+    "chi": {"npz": "runs/abstract-ismrm/28-10-chi-tv-Sim2-0.0001_300.npz", "clave": "chi"}
+   }
+  },
+  {
+   "nombre": "2D TDV",
+   "color": "#e08a1e",
+   "ancho": 2.6,
+   "COSMOS": {
+    "tray": {"json": "runs/abstract-ismrm/28-10-grid-tdv2d-COSMOS.json", "clave": ["configs", "0.0426/0.00568", "COSMOS", "nrmse"]},
+    "chi": {"npz": "runs/abstract-ismrm/28-10-chi-tdv2d-COSMOS-0.0426_0.00568.npz", "clave": "chi"}
+   },
+   "Sim2": {
+    "tray": {"json": "runs/abstract-ismrm/28-10-grid-tdv2d-Sim2-orto.json", "clave": ["configs", "0.0426/0.01136", "Sim2", "nrmse"]},
+    "chi": {"npz": "runs/abstract-ismrm/28-10-chi-tdv2d-Sim2-0.0426_0.01136.npz", "clave": "chi"}
+   }
+  },
+  {
+   "nombre": "3D TDV (ours)",
+   "color": "#1f5fbf",
+   "ancho": 3.0,
+   "COSMOS": {
+    "tray": {"json": "runs/grid-mu-alfa/27-10-grid-msk-estado-014880.json", "clave": ["configs", "0.01512/0.008", "COSMOS", "trayectoria", "nrmse"]},
+    "chi": {"npz": "runs/grid-mu-alfa/28-10-abstract_chis.npz", "clave": "14880/COSMOS/0.01512_0.008"}
+   },
+   "Sim2": {
+    "tray": {"json": "runs/grid-mu-alfa/28-10-grid-sim2b-estado-014880.json", "clave": ["configs", "0.0423/0.005674", "trayectoria", "nrmse"]},
+    "chi": {"npz": "runs/grid-mu-alfa/28-10-abstract_chis.npz", "clave": "14880/Sim2/0.0423_0.005674"}
+   }
+  }
+ ],
+ "ylim": {"COSMOS": [22, 70], "Sim2": [30, 75]},
+ "dpi": 220
+}

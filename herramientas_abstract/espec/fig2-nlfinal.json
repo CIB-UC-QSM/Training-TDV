@@ -1,0 +1,61 @@
+{
+ "sujeto": "COSMOS",
+ "titulo": "COSMOS",
+ "metodos": [
+  {
+   "nombre": "Reference",
+   "npz": "referencia",
+   "clave": ""
+  },
+  {
+   "nombre": "TV",
+   "npz": "runs/abstract-ismrm/28-10-chi-tvisonl-COSMOS-0.0002_15.npz",
+   "clave": "chi300",
+   "params": "nonlinear · 300 it · λ 0.0002"
+  },
+  {
+   "nombre": "2D TDV",
+   "npz": "runs/abstract-ismrm/28-10-chi-tdv2d-COSMOS-0.0426_0.00568.npz",
+   "clave": "chi",
+   "params": "linear · 100 it"
+  },
+  {
+   "nombre": "3D TDV (ours)",
+   "npz": "/home/santicien/Documents/Training-TDV/runs/grid-mu-alfa/28-10-300-nl-cosmos_chis.npz",
+   "clave": "nl/COSMOS/0.0031_0.00054/it300",
+   "params": "nonlinear · 300 it"
+  }
+ ],
+ "rois": [
+  {
+   "letra": "a",
+   "plano": 0,
+   "fila": 52,
+   "col": 108,
+   "lado": 30
+  },
+  {
+   "letra": "b",
+   "plano": 1,
+   "fila": 72,
+   "col": 62,
+   "lado": 30
+  },
+  {
+   "letra": "c",
+   "plano": 2,
+   "fila": 93,
+   "col": 62,
+   "lado": 30
+  },
+  {
+   "letra": "d",
+   "plano": 2,
+   "fila": 28,
+   "col": 42,
+   "lado": 30
+  }
+ ],
+ "error_plano": 0,
+ "dpi": 200
+}

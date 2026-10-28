@@ -1,0 +1,21 @@
+{
+ "sujeto": "COSMOS",
+ "titulo": "COSMOS",
+ "metodos": [
+  {"nombre": "Reference", "npz": "referencia", "clave": ""},
+  {"nombre": "TV", "npz": "runs/abstract-ismrm/28-10-chi-tviso-COSMOS-0.0001_300.npz", "clave": "chi",
+   "params": "isotropic · λ 1e-4 · μ 0.03"},
+  {"nombre": "2D TDV", "npz": "runs/abstract-ismrm/28-10-chi-tdv2d-COSMOS-0.0426_0.00568.npz", "clave": "chi",
+   "params": "natural images · target 0.043 · μ 0.0057"},
+  {"nombre": "3D TDV (ours)", "npz": "runs/grid-mu-alfa/28-10-abstract_chis.npz",
+   "clave": "14880/COSMOS/0.01512_0.008", "params": "brain T1 · target 0.015 · μ 0.008"}
+ ],
+ "rois": [
+  {"letra": "a", "plano": 0, "fila": 52, "col": 108, "lado": 30},
+  {"letra": "b", "plano": 1, "fila": 72, "col": 62, "lado": 30},
+  {"letra": "c", "plano": 2, "fila": 93, "col": 62, "lado": 30},
+  {"letra": "d", "plano": 2, "fila": 28, "col": 42, "lado": 30}
+ ],
+ "error_plano": 0,
+ "dpi": 200
+}

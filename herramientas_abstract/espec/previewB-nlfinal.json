@@ -1,0 +1,32 @@
+{
+ "sujeto": "Sim2",
+ "roi": {
+  "plano": 0,
+  "fila": 97,
+  "col": 34,
+  "lado": 30
+ },
+ "dpi": 150,
+ "metodos": [
+  {
+   "nombre": "Reference",
+   "npz": "referencia",
+   "clave": ""
+  },
+  {
+   "nombre": "TV",
+   "npz": "runs/abstract-ismrm/28-10-chi-tvisonl-Sim2-0.0004_15.npz",
+   "clave": "chi300"
+  },
+  {
+   "nombre": "2D TDV",
+   "npz": "runs/abstract-ismrm/28-10-chi-tdv2d-Sim2-0.0426_0.01136.npz",
+   "clave": "chi"
+  },
+  {
+   "nombre": "3D TDV",
+   "npz": "/home/santicien/Documents/Training-TDV/runs/grid-mu-alfa/28-10-300-nl_chis.npz",
+   "clave": "nl/Sim2/0.0102_0.00055/it300"
+  }
+ ]
+}

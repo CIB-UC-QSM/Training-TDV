@@ -1,0 +1,61 @@
+{
+ "sujeto": "Sim2",
+ "titulo": "Sim2",
+ "metodos": [
+  {
+   "nombre": "Reference",
+   "npz": "referencia",
+   "clave": ""
+  },
+  {
+   "nombre": "TV",
+   "npz": "runs/abstract-ismrm/28-10-chi-tvisonl-Sim2-0.0004_15.npz",
+   "clave": "chi300",
+   "params": "nonlinear · 300 it · λ 0.0004"
+  },
+  {
+   "nombre": "2D TDV",
+   "npz": "runs/abstract-ismrm/28-10-chi-tdv2d-Sim2-0.0426_0.01136.npz",
+   "clave": "chi",
+   "params": "linear · 100 it"
+  },
+  {
+   "nombre": "3D TDV (ours)",
+   "npz": "/home/santicien/Documents/Training-TDV/runs/grid-mu-alfa/28-10-300-nl_chis.npz",
+   "clave": "nl/Sim2/0.0102_0.00055/it300",
+   "params": "nonlinear · 300 it"
+  }
+ ],
+ "rois": [
+  {
+   "letra": "a",
+   "plano": 0,
+   "fila": 20,
+   "col": 80,
+   "lado": 30
+  },
+  {
+   "letra": "b",
+   "plano": 0,
+   "fila": 97,
+   "col": 34,
+   "lado": 30
+  },
+  {
+   "letra": "c",
+   "plano": 1,
+   "fila": 80,
+   "col": 62,
+   "lado": 30
+  },
+  {
+   "letra": "d",
+   "plano": 2,
+   "fila": 45,
+   "col": 62,
+   "lado": 30
+  }
+ ],
+ "error_plano": 0,
+ "dpi": 200
+}
